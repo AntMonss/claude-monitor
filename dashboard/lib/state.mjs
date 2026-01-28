@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 
 export const DATA_DIR = path.resolve("temp", "ai-dashboard");
 export const STATE_FILE = path.join(DATA_DIR, "watching-state.json");
@@ -8,8 +9,29 @@ export const FILE_NAMES = {
   system: "system-metrics.jsonl",
   process: "process-stats.jsonl",
   codex: "codex-events.jsonl",
+  codexLocal: "codex-local-events.jsonl",
   latency: "latency-events.jsonl",
   claude: "claude-otel-events.jsonl",
+  claudeLocal: "claude-local-events.jsonl",
+};
+
+// Claude Code local paths
+export const CLAUDE_HOME = path.join(os.homedir(), ".claude");
+export const CLAUDE_PATHS = {
+  history: path.join(CLAUDE_HOME, "history.jsonl"),
+  statsCache: path.join(CLAUDE_HOME, "stats-cache.json"),
+  telemetry: path.join(CLAUDE_HOME, "telemetry"),
+  tasks: path.join(CLAUDE_HOME, "tasks"),
+  projects: path.join(CLAUDE_HOME, "projects"),
+};
+
+// Codex local paths
+export const CODEX_HOME = path.join(os.homedir(), ".codex");
+export const CODEX_PATHS = {
+  history: path.join(CODEX_HOME, "history.jsonl"),
+  sessions: path.join(CODEX_HOME, "sessions"),
+  config: path.join(CODEX_HOME, "config.toml"),
+  log: path.join(CODEX_HOME, "log"),
 };
 
 export async function ensureDirectory() {

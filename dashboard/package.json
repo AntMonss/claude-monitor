@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "vite",
-    "dev:all": "concurrently -k -n \"vite,server,collector,codex,latency,otel\" -c \"cyan,green,yellow,magenta,blue,red\" \"npm:dev\" \"npm:server\" \"npm:collector\" \"npm:codex-log\" \"npm:latency\" \"npm:otel-collector\"",
+    "dev:all": "concurrently -k -n \"vite,server,collector,codex,latency,otel,claude-local,codex-local\" -c \"cyan,green,yellow,magenta,blue,red,white,gray\" \"npm:dev\" \"npm:server\" \"npm:collector\" \"npm:codex-log\" \"npm:latency\" \"npm:otel-collector\" \"npm:claude-local\" \"npm:codex-local\"",
     "build": "vite build",
     "preview": "vite preview",
     "start": "npm run server",
@@ -13,7 +13,9 @@
     "collector": "node scripts/collector.mjs",
     "codex-log": "node scripts/codex-log-monitor.mjs",
     "latency": "node scripts/latency-monitor.mjs",
-    "otel-collector": "node scripts/otel-collector.mjs"
+    "otel-collector": "node scripts/otel-collector.mjs",
+    "claude-local": "node scripts/claude-local-collector.mjs",
+    "codex-local": "node scripts/codex-local-collector.mjs"
   },
   "dependencies": {
     "@radix-ui/react-scroll-area": "^1.2.10",

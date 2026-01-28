@@ -4,3 +4,8 @@
 xcuserdata/
 DerivedData/
 .DS_Store
+
+# Dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/temp/

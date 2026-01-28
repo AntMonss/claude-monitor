@@ -14,6 +14,38 @@ import {
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+// OTEL collector health check port
+const OTEL_PORT = 4319;
+
+/**
+ * Check if OTEL collector is receiving active telemetry
+ * Returns true if OTEL is up and has recent events
+ */
+async function checkOtelStatus() {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+
+    const res = await fetch(`http://localhost:${OTEL_PORT}/health`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return false;
+
+    // Also check if we have recent OTEL events (last 5 minutes)
+    const claudeEvents = await readJsonLines(FILE_NAMES.claude, 10);
+    if (claudeEvents.length === 0) return false;
+
+    const latestTs = claudeEvents[claudeEvents.length - 1]?.ts;
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+
+    return latestTs > fiveMinutesAgo;
+  } catch {
+    return false;
+  }
+}
+
 app.get("/api/state", async (req, res) => {
   const state = await readWatchingState();
   res.json(state);
@@ -31,19 +63,41 @@ app.post("/api/state", async (req, res) => {
 
 app.get("/api/events", async (req, res) => {
   const limit = Math.max(5, Math.min(Number(req.query.limit) || 60, 200));
-  const [systemMetrics, processStats, codexEvents, latencyEvents, claudeEvents] = await Promise.all([
+  const [systemMetrics, processStats, codexEvents, codexLocalEvents, latencyEvents, claudeEvents, claudeLocalEvents, otelUp] = await Promise.all([
     readJsonLines(FILE_NAMES.system, limit),
     readJsonLines(FILE_NAMES.process, limit),
     readJsonLines(FILE_NAMES.codex, limit),
+    readJsonLines(FILE_NAMES.codexLocal, limit),
     readJsonLines(FILE_NAMES.latency, limit),
     readJsonLines(FILE_NAMES.claude, limit),
+    readJsonLines(FILE_NAMES.claudeLocal, limit),
+    checkOtelStatus(),
   ]);
-  res.json({ systemMetrics, processStats, codexEvents, latencyEvents, claudeEvents });
+
+  // Determine monitoring mode based on OTEL status
+  const mode = otelUp ? "active" : "passive";
+
+  res.json({
+    systemMetrics,
+    processStats,
+    codexEvents,
+    codexLocalEvents,
+    latencyEvents,
+    claudeEvents,
+    claudeLocalEvents,
+    mode,
+  });
+});
+
+// Mode endpoint for quick mode check
+app.get("/api/mode", async (req, res) => {
+  const otelUp = await checkOtelStatus();
+  res.json({ mode: otelUp ? "active" : "passive", otelUp });
 });
 
 // Periodic rotation of JSONL files (every 5 minutes)
 setInterval(async () => {
-  const files = [FILE_NAMES.system, FILE_NAMES.process, FILE_NAMES.codex, FILE_NAMES.latency, FILE_NAMES.claude];
+  const files = [FILE_NAMES.system, FILE_NAMES.process, FILE_NAMES.codex, FILE_NAMES.codexLocal, FILE_NAMES.latency, FILE_NAMES.claude, FILE_NAMES.claudeLocal];
   for (const file of files) {
     await rotateJsonlIfNeeded(path.join(DATA_DIR, file), 500);
   }
@@ -72,6 +126,8 @@ const MANAGED_COMMANDS = [
   { name: "codex-log", script: "codex-log" },
   { name: "latency", script: "latency" },
   { name: "otel-collector", script: "otel-collector" },
+  { name: "claude-local", script: "claude-local" },
+  { name: "codex-local", script: "codex-local" },
 ];
 
 const managedProcesses = new Map();

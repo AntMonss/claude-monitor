@@ -80,8 +80,21 @@ function parseLogRecord(record) {
   // Get event name
   const eventName = attrs["event.name"] ?? record.severityText ?? "unknown";
 
-  // Skip non-Claude events
-  if (!eventName.startsWith("claude_code.") && !attrs["event.name"]?.includes("claude")) {
+  // Determine agent source (Claude or Codex)
+  let agent = null;
+  let cleanEventName = eventName;
+
+  if (eventName.startsWith("claude_code.")) {
+    agent = "claude";
+    cleanEventName = eventName.replace("claude_code.", "");
+  } else if (eventName.startsWith("codex.")) {
+    agent = "codex";
+    cleanEventName = eventName.replace("codex.", "");
+  } else if (attrs["event.name"]?.includes("claude")) {
+    agent = "claude";
+  } else if (attrs["event.name"]?.includes("codex")) {
+    agent = "codex";
+  } else {
     // Still include if it has relevant attributes
     if (!attrs.duration_ms && !attrs.tool_name && !attrs.model) {
       return null;
@@ -93,14 +106,15 @@ function parseLogRecord(record) {
     ts: record.timeUnixNano
       ? Math.floor(Number(record.timeUnixNano) / 1_000_000)
       : Date.now(),
-    event: eventName.replace("claude_code.", ""),
+    agent: agent ?? "unknown",
+    event: cleanEventName,
     ...attrs,
   };
 
   // Log interesting events
   if (event.duration_ms || event.event === "api_request" || event.event === "tool_result") {
     console.log(
-      `[otel-collector] ${new Date(event.ts).toISOString()} · ${event.event} · ${event.duration_ms ?? "—"}ms`
+      `[otel-collector] ${new Date(event.ts).toISOString()} · ${event.agent} · ${event.event} · ${event.duration_ms ?? "—"}ms`
     );
   }
 
@@ -167,8 +181,17 @@ function extractMetricsFromPayload(payload) {
 function parseMetric(metric) {
   const name = metric.name;
 
-  // Only care about Claude Code metrics
-  if (!name?.startsWith("claude_code.")) {
+  // Determine agent source
+  let agent = null;
+  let cleanName = name;
+
+  if (name?.startsWith("claude_code.")) {
+    agent = "claude";
+    cleanName = name.replace("claude_code.", "");
+  } else if (name?.startsWith("codex.")) {
+    agent = "codex";
+    cleanName = name.replace("codex.", "");
+  } else {
     return null;
   }
 
@@ -206,7 +229,8 @@ function parseMetric(metric) {
     ts: point.timeUnixNano
       ? Math.floor(Number(point.timeUnixNano) / 1_000_000)
       : Date.now(),
-    metric: name.replace("claude_code.", ""),
+    agent,
+    metric: cleanName,
     value,
     ...attrs,
   };

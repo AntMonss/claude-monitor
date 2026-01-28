@@ -88,27 +88,77 @@ type ClaudeEventRecord = {
   status_code?: number;
 };
 
+// Claude Code local events (from claude-local-collector)
+type ClaudeLocalEventRecord = {
+  ts: number;
+  source: "local";
+  event: "session_snapshot" | "daily_stats" | "task_status";
+  sessionId?: string;
+  messageCount?: number;
+  toolCallCount?: number;
+  messageToolRatio?: number;
+  durationMinutes?: number;
+  project?: string;
+  date?: string;
+  sessionCount?: number;
+  totalSessions?: number;
+  totalMessages?: number;
+  pendingCount?: number;
+  blockedCount?: number;
+  tasks?: Array<{ id: string; subject: string; status: string }>;
+  patterns?: Record<string, string>;
+};
+
+// Codex local events (from codex-local-collector)
+type CodexLocalEventRecord = {
+  ts: number;
+  source: "local";
+  agent: "codex";
+  event: "session_snapshot" | "session_file" | "daily_stats";
+  sessionId?: string;
+  promptCount?: number;
+  messageCount?: number;
+  toolCount?: number;
+  durationMinutes?: number;
+  cliVersion?: string;
+  model?: string;
+  date?: string;
+  sessionCount?: number;
+  patterns?: Record<string, string>;
+};
+
+// Monitoring mode
+type MonitoringMode = "active" | "passive";
+
 type EventsPayload = {
   systemMetrics: SystemMetricsRecord[];
   processStats: ProcessStatsRecord[];
   codexEvents: CodexEventRecord[];
+  codexLocalEvents: CodexLocalEventRecord[];
   latencyEvents: LatencyEventRecord[];
   claudeEvents: ClaudeEventRecord[];
+  claudeLocalEvents: ClaudeLocalEventRecord[];
+  mode: MonitoringMode;
 };
 
 type TimelineEntry =
   | { kind: "system"; ts: number; label: string; data: SystemMetricsRecord }
   | { kind: "codex"; ts: number; label: string; data: CodexEventRecord }
+  | { kind: "codex-local"; ts: number; label: string; data: CodexLocalEventRecord }
   | { kind: "latency"; ts: number; label: string; data: LatencyEventRecord }
-  | { kind: "claude"; ts: number; label: string; data: ClaudeEventRecord };
+  | { kind: "claude"; ts: number; label: string; data: ClaudeEventRecord }
+  | { kind: "local"; ts: number; label: string; data: ClaudeLocalEventRecord };
 
 export default function App() {
   const [events, setEvents] = useState<EventsPayload>({
     systemMetrics: [],
     processStats: [],
     codexEvents: [],
+    codexLocalEvents: [],
     latencyEvents: [],
     claudeEvents: [],
+    claudeLocalEvents: [],
+    mode: "passive",
   });
 
   const [watchingState, setWatchingState] = useState<{
@@ -218,7 +268,33 @@ export default function App() {
         data: event,
       }));
 
-    const merged = [...systemEntries, ...codexEntries, ...latencyEntries, ...claudeEntries].sort(
+    // Claude local events (session snapshots, daily stats)
+    const localEntries = events.claudeLocalEvents
+      .filter((e) => e.event === "session_snapshot" || e.event === "daily_stats")
+      .slice(-10)
+      .map((event) => ({
+        kind: "local" as const,
+        ts: event.ts,
+        label: event.event === "session_snapshot"
+          ? `${event.messageCount ?? 0} msgs`
+          : `${event.messageToolRatio?.toFixed(1) ?? "—"} ratio`,
+        data: event,
+      }));
+
+    // Codex local events
+    const codexLocalEntries = events.codexLocalEvents
+      .filter((e) => e.event === "session_snapshot" || e.event === "daily_stats")
+      .slice(-10)
+      .map((event) => ({
+        kind: "codex-local" as const,
+        ts: event.ts,
+        label: event.event === "session_snapshot"
+          ? `${event.promptCount ?? 0} prompts`
+          : `${event.sessionCount ?? 0} sess`,
+        data: event,
+      }));
+
+    const merged = [...systemEntries, ...codexEntries, ...latencyEntries, ...claudeEntries, ...localEntries, ...codexLocalEntries].sort(
       (a, b) => a.ts - b.ts
     );
     const limited = merged.slice(-16);
@@ -418,6 +494,109 @@ export default function App() {
       lastUpdate: systemLastUpdate,
     });
 
+    // Claude Local stats (from local collector)
+    const latestLocalStats = events.claudeLocalEvents
+      .filter((e) => e.event === "daily_stats")
+      .at(-1);
+    const hasLocalData = events.claudeLocalEvents.length > 0;
+    const localLastUpdate = events.claudeLocalEvents.at(-1)?.ts ?? null;
+
+    if (hasLocalData && latestLocalStats) {
+      const ratio = latestLocalStats.messageToolRatio ?? 0;
+      sources.push({
+        id: "local-ratio",
+        name: "Message/Tool Ratio",
+        icon: "terminal",
+        status: ratio > 10 ? "error" : ratio > 7 ? "warning" : "ok",
+        value: ratio > 0 ? ratio.toFixed(1) : "—",
+        detail: `${latestLocalStats.messageCount ?? 0} msgs / ${latestLocalStats.toolCallCount ?? 0} tools`,
+        score: ratio > 10 ? 85 : ratio > 7 ? 55 : 0,
+        refreshMs: 30000,
+        lastUpdate: localLastUpdate,
+      });
+    }
+
+    // Local session info
+    const latestSession = events.claudeLocalEvents
+      .filter((e) => e.event === "session_snapshot")
+      .at(-1);
+
+    if (latestSession && latestSession.durationMinutes) {
+      const durationMin = latestSession.durationMinutes;
+      sources.push({
+        id: "local-session",
+        name: "Session Active",
+        icon: "terminal",
+        status: durationMin > 480 ? "error" : durationMin > 240 ? "warning" : "ok",
+        value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m`,
+        detail: `${latestSession.messageCount ?? 0} messages`,
+        score: durationMin > 480 ? 70 : durationMin > 240 ? 40 : 0,
+        refreshMs: 30000,
+        lastUpdate: localLastUpdate,
+      });
+    }
+
+    // Blocked tasks
+    const latestTaskStatus = events.claudeLocalEvents
+      .filter((e) => e.event === "task_status")
+      .at(-1);
+
+    if (latestTaskStatus && (latestTaskStatus.blockedCount ?? 0) > 0) {
+      const blocked = latestTaskStatus.blockedCount ?? 0;
+      sources.push({
+        id: "local-tasks",
+        name: "Tâches Bloquées",
+        icon: "terminal",
+        status: blocked > 5 ? "error" : blocked > 2 ? "warning" : "ok",
+        value: `${blocked}`,
+        detail: `${latestTaskStatus.pendingCount ?? 0} en attente`,
+        score: blocked > 5 ? 70 : blocked > 2 ? 35 : 0,
+        refreshMs: 30000,
+        lastUpdate: localLastUpdate,
+      });
+    }
+
+    // Codex local stats
+    const latestCodexStats = events.codexLocalEvents
+      .filter((e) => e.event === "daily_stats")
+      .at(-1);
+    const hasCodexLocalData = events.codexLocalEvents.length > 0;
+    const codexLocalLastUpdate = events.codexLocalEvents.at(-1)?.ts ?? null;
+
+    if (hasCodexLocalData && latestCodexStats) {
+      sources.push({
+        id: "codex-local",
+        name: "Codex (Local)",
+        icon: "terminal",
+        status: "ok",
+        value: `${latestCodexStats.promptCount ?? 0} prompts`,
+        detail: `${latestCodexStats.sessionCount ?? 0} sessions aujourd'hui`,
+        score: 0,
+        refreshMs: 30000,
+        lastUpdate: codexLocalLastUpdate,
+      });
+    }
+
+    // Codex session info
+    const latestCodexSession = events.codexLocalEvents
+      .filter((e) => e.event === "session_snapshot")
+      .at(-1);
+
+    if (latestCodexSession && latestCodexSession.durationMinutes) {
+      const durationMin = latestCodexSession.durationMinutes;
+      sources.push({
+        id: "codex-session",
+        name: "Codex Session",
+        icon: "terminal",
+        status: durationMin > 240 ? "error" : durationMin > 120 ? "warning" : "ok",
+        value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m`,
+        detail: `${latestCodexSession.promptCount ?? 0} prompts`,
+        score: durationMin > 240 ? 60 : durationMin > 120 ? 30 : 0,
+        refreshMs: 30000,
+        lastUpdate: codexLocalLastUpdate,
+      });
+    }
+
     // Find probable cause
     const sortedByScore = [...sources].sort((a, b) => b.score - a.score);
     const topIssue = sortedByScore[0];
@@ -440,7 +619,7 @@ export default function App() {
     }
 
     return { sources, summary, summaryStatus, topIssue };
-  }, [latest, latestLatency, memPercent, watcherLeaderboard, events.systemMetrics.length, events.latencyEvents.length, events.claudeEvents.length, claudeApiStats]);
+  }, [latest, latestLatency, memPercent, watcherLeaderboard, events.systemMetrics.length, events.latencyEvents.length, events.claudeEvents.length, events.claudeLocalEvents, events.codexLocalEvents, claudeApiStats]);
 
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
@@ -462,6 +641,40 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <div className="group relative">
+              <Badge
+                variant={events.mode === "active" ? "default" : "secondary"}
+                className="gap-1.5 cursor-help"
+              >
+                {events.mode === "active" ? (
+                  <Zap className="h-3 w-3" />
+                ) : (
+                  <HardDrive className="h-3 w-3" />
+                )}
+                {events.mode === "active" ? "Active (OTEL)" : "Passive (Local)"}
+              </Badge>
+              {events.mode === "passive" && (
+                <div className="absolute right-0 top-full mt-2 z-50 hidden group-hover:block w-80 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg">
+                  <p className="text-xs font-medium mb-2">Activer le mode OTEL :</p>
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground mb-1">Claude Code :</p>
+                      <code className="block text-[9px] bg-muted p-1.5 rounded font-mono break-all">
+                        CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4319 claude
+                      </code>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground mb-1">Codex (~/.codex/config.toml) :</p>
+                      <code className="block text-[9px] bg-muted p-1.5 rounded font-mono whitespace-pre">
+{`[otel]
+exporter = "otlp-http"
+endpoint = "http://localhost:4319"`}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
             <Badge
               variant={watchingState.enabled ? "success" : "secondary"}
               className="gap-1.5"
@@ -602,6 +815,12 @@ export default function App() {
           </CardContent>
         </Card>
 
+        {/* Pattern Analysis Panel (shown only when patterns detected) */}
+        <PatternAnalysisPanel
+          claudeLocalEvents={events.claudeLocalEvents}
+          codexLocalEvents={events.codexLocalEvents}
+        />
+
         {/* Metrics Cards */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <MetricCard
@@ -679,7 +898,13 @@ export default function App() {
                             ? "bg-green-500/10 text-green-400"
                             : entry.kind === "claude"
                               ? "bg-orange-500/10 text-orange-400"
-                              : "bg-purple-500/10 text-purple-400"
+                              : entry.kind === "local"
+                                ? "bg-cyan-500/10 text-cyan-400"
+                                : entry.kind === "codex-local"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : entry.kind === "codex"
+                                    ? "bg-purple-500/10 text-purple-400"
+                                    : "bg-purple-500/10 text-purple-400"
                       )}
                     >
                       {entry.kind === "system" ? (
@@ -688,6 +913,10 @@ export default function App() {
                         <Globe className="h-4 w-4" />
                       ) : entry.kind === "claude" ? (
                         <Bot className="h-4 w-4" />
+                      ) : entry.kind === "local" ? (
+                        <HardDrive className="h-4 w-4" />
+                      ) : entry.kind === "codex-local" ? (
+                        <Terminal className="h-4 w-4" />
                       ) : (
                         <Zap className="h-4 w-4" />
                       )}
@@ -770,7 +999,9 @@ export default function App() {
                           ? "Latence réseau"
                           : selected.kind === "claude"
                             ? `Claude: ${(selected.data as ClaudeEventRecord).event}`
-                            : selected.label}
+                            : selected.kind === "local"
+                              ? `Local: ${(selected.data as ClaudeLocalEventRecord).event}`
+                              : selected.label}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       {selected.kind === "system"
@@ -779,7 +1010,9 @@ export default function App() {
                           ? `Anthropic: ${selected.data.anthropicMs ?? "—"}ms · OpenAI: ${selected.data.openaiMs ?? "—"}ms`
                           : selected.kind === "claude"
                             ? `${(selected.data as ClaudeEventRecord).duration_ms ?? "—"}ms${(selected.data as ClaudeEventRecord).model ? ` · ${(selected.data as ClaudeEventRecord).model}` : ""}`
-                            : `${String((selected.data as CodexEventRecord).note ?? (selected.data as CodexEventRecord).raw ?? "—").slice(0, 64)}`}
+                            : selected.kind === "local"
+                              ? `${(selected.data as ClaudeLocalEventRecord).messageCount ?? 0} messages · ${(selected.data as ClaudeLocalEventRecord).durationMinutes ?? 0}min`
+                              : `${String((selected.data as CodexEventRecord).note ?? (selected.data as CodexEventRecord).raw ?? "—").slice(0, 64)}`}
                     </p>
                   </div>
 
@@ -866,6 +1099,91 @@ export default function App() {
                           <div className="flex items-center justify-between text-sm">
                             <span className="text-muted-foreground">Erreur</span>
                             <span className="font-mono text-red-400">{(selected.data as ClaudeEventRecord).error}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {selected.kind === "local" && (
+                    <div className="rounded-lg bg-background/50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Détail Local
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {(selected.data as ClaudeLocalEventRecord).event === "session_snapshot" && (
+                          <>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Session</span>
+                              <span className="font-mono text-xs">{(selected.data as ClaudeLocalEventRecord).sessionId?.slice(0, 8)}...</span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Messages</span>
+                              <span className="font-mono font-bold">{(selected.data as ClaudeLocalEventRecord).messageCount}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Durée</span>
+                              <span className={cn(
+                                "font-mono font-bold",
+                                ((selected.data as ClaudeLocalEventRecord).durationMinutes ?? 0) > 240
+                                  ? "text-amber-400"
+                                  : "text-green-400"
+                              )}>
+                                {Math.floor(((selected.data as ClaudeLocalEventRecord).durationMinutes ?? 0) / 60)}h{((selected.data as ClaudeLocalEventRecord).durationMinutes ?? 0) % 60}m
+                              </span>
+                            </div>
+                            {(selected.data as ClaudeLocalEventRecord).project && (
+                              <div className="flex items-center justify-between text-sm">
+                                <span className="text-muted-foreground">Projet</span>
+                                <span className="font-mono text-xs truncate max-w-[150px]">{(selected.data as ClaudeLocalEventRecord).project?.split("/").slice(-2).join("/")}</span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {(selected.data as ClaudeLocalEventRecord).event === "daily_stats" && (
+                          <>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Date</span>
+                              <span className="font-mono">{(selected.data as ClaudeLocalEventRecord).date}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Messages</span>
+                              <span className="font-mono font-bold">{(selected.data as ClaudeLocalEventRecord).messageCount}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Tool Calls</span>
+                              <span className="font-mono">{(selected.data as ClaudeLocalEventRecord).toolCallCount}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Ratio Msg/Tool</span>
+                              <span className={cn(
+                                "font-mono font-bold",
+                                ((selected.data as ClaudeLocalEventRecord).messageToolRatio ?? 0) > 10
+                                  ? "text-red-400"
+                                  : ((selected.data as ClaudeLocalEventRecord).messageToolRatio ?? 0) > 7
+                                    ? "text-amber-400"
+                                    : "text-green-400"
+                              )}>
+                                {(selected.data as ClaudeLocalEventRecord).messageToolRatio?.toFixed(1)}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground">Sessions</span>
+                              <span className="font-mono">{(selected.data as ClaudeLocalEventRecord).sessionCount}</span>
+                            </div>
+                          </>
+                        )}
+                        {(selected.data as ClaudeLocalEventRecord).patterns && Object.keys((selected.data as ClaudeLocalEventRecord).patterns!).length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-border">
+                            <p className="text-xs uppercase tracking-wide text-amber-400 mb-2">Patterns détectés</p>
+                            {Object.entries((selected.data as ClaudeLocalEventRecord).patterns!).map(([key, severity]) => (
+                              <div key={key} className="flex items-center justify-between text-sm">
+                                <span className="text-muted-foreground">{key}</span>
+                                <Badge variant={severity === "error" ? "destructive" : "warning"}>
+                                  {severity}
+                                </Badge>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -971,6 +1289,141 @@ function formatBps(bytesPerSec: number) {
   if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+// Pattern suggestions mapping
+const PATTERN_SUGGESTIONS: Record<string, { title: string; suggestion: string }> = {
+  highMessageToolRatio: {
+    title: "Ratio Message/Tool élevé",
+    suggestion: "Beaucoup de messages par rapport aux appels d'outils. L'agent pourrait être bloqué ou en attente de clarification.",
+  },
+  longRunningSession: {
+    title: "Session longue",
+    suggestion: "Cette session dure depuis plusieurs heures. Envisagez de la redémarrer pour éviter l'accumulation de contexte.",
+  },
+  blockedTasks: {
+    title: "Tâches bloquées",
+    suggestion: "Des tâches attendent des dépendances. Vérifiez les blocages et résolvez-les pour continuer.",
+  },
+  manyBlockedTasks: {
+    title: "Nombreuses tâches bloquées",
+    suggestion: "Plusieurs tâches sont en attente. Priorisez et résolvez les blocages critiques.",
+  },
+  // Codex patterns
+  highPromptFrequency: {
+    title: "Fréquence de prompts élevée",
+    suggestion: "Beaucoup de prompts envoyés récemment. Vérifiez si l'agent n'est pas bloqué dans une boucle.",
+  },
+};
+
+function PatternAnalysisPanel({
+  claudeLocalEvents,
+  codexLocalEvents,
+}: {
+  claudeLocalEvents: ClaudeLocalEventRecord[];
+  codexLocalEvents: CodexLocalEventRecord[];
+}) {
+  // Collect all patterns from recent events (both Claude and Codex)
+  const allPatterns = useMemo(() => {
+    const patternMap = new Map<string, { severity: string; count: number; agent: string }>();
+
+    // Claude patterns
+    for (const event of claudeLocalEvents.slice(-20)) {
+      if (event.patterns) {
+        for (const [pattern, severity] of Object.entries(event.patterns)) {
+          if (severity) {
+            const existing = patternMap.get(pattern);
+            if (existing) {
+              existing.count++;
+              if (severity === "error" && existing.severity === "warning") {
+                existing.severity = "error";
+              }
+            } else {
+              patternMap.set(pattern, { severity, count: 1, agent: "Claude" });
+            }
+          }
+        }
+      }
+    }
+
+    // Codex patterns
+    for (const event of codexLocalEvents.slice(-20)) {
+      if (event.patterns) {
+        for (const [pattern, severity] of Object.entries(event.patterns)) {
+          if (severity) {
+            const key = `codex_${pattern}`;
+            const existing = patternMap.get(key);
+            if (existing) {
+              existing.count++;
+              if (severity === "error" && existing.severity === "warning") {
+                existing.severity = "error";
+              }
+            } else {
+              patternMap.set(key, { severity, count: 1, agent: "Codex" });
+            }
+          }
+        }
+      }
+    }
+
+    return Array.from(patternMap.entries()).map(([pattern, data]) => ({
+      pattern: pattern.replace("codex_", ""),
+      ...data,
+      ...PATTERN_SUGGESTIONS[pattern.replace("codex_", "")],
+    }));
+  }, [claudeLocalEvents, codexLocalEvents]);
+
+  if (allPatterns.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card className="border-amber-500/30 bg-amber-500/5">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5 text-amber-400" />
+          <CardTitle className="text-base font-medium">
+            Patterns Détectés
+          </CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {allPatterns.map(({ pattern, severity, count, title, suggestion, agent }) => (
+          <div
+            key={pattern}
+            className={cn(
+              "rounded-lg border p-3",
+              severity === "error"
+                ? "border-red-500/30 bg-red-500/10"
+                : "border-amber-500/30 bg-amber-500/10"
+            )}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className={cn(
+                    "font-medium",
+                    severity === "error" ? "text-red-400" : "text-amber-400"
+                  )}>
+                    {title || pattern}
+                  </p>
+                  <Badge variant="outline" className="text-[10px] px-1 py-0">
+                    {agent}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {suggestion || "Pattern détecté dans les données locales."}
+                </p>
+              </div>
+              <Badge variant={severity === "error" ? "destructive" : "warning"}>
+                {count > 1 ? `${count}x` : severity}
+              </Badge>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
 }
 
 /**
