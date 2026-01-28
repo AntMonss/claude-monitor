@@ -111,20 +111,31 @@ struct MonitorSnapshot {
     }
 
     /// Status indicator: 🟢 = all good, 🟡 = minor, 🟠 = attention, 🔴 = problem
-    /// Based on system resources only (RAM, CPU), not agent count
+    /// Based primarily on system resources (RAM, CPU)
+    /// Agent count is only a factor when combined with resource pressure
     var statusIndicator: String {
         // Red: orphans detected (cleanup needed)
         if hasOrphans {
             return "🔴"
         }
 
-        // Orange: high memory (>85%) or high CPU (>80%)
+        // Orange: high resource usage
+        // - RAM >85% or CPU >80%
+        // - OR many agents (>8) with moderate resource pressure (RAM >60% or CPU >50%)
         if system.memoryUsedPercent > 85 || system.cpuUserPercent > 80 {
             return "🟠"
         }
+        if totalAllAgents > 8 && (system.memoryUsedPercent > 60 || system.cpuUserPercent > 50) {
+            return "🟠"
+        }
 
-        // Yellow: moderate memory (>75%) or moderate CPU (>60%)
+        // Yellow: moderate resource usage
+        // - RAM >75% or CPU >60%
+        // - OR several agents (>5) with some resource pressure (RAM >50% or CPU >40%)
         if system.memoryUsedPercent > 75 || system.cpuUserPercent > 60 {
+            return "🟡"
+        }
+        if totalAllAgents > 5 && (system.memoryUsedPercent > 50 || system.cpuUserPercent > 40) {
             return "🟡"
         }
 

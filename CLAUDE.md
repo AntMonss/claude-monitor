@@ -23,13 +23,17 @@ Le menubar reste minimal. Toute l'intelligence est dans le dashboard.
 
 ## Menubar (ce projet)
 
-Indicateur de status dans la menubar (rond de couleur) - basé sur RAM/CPU uniquement :
+Indicateur de status dans la menubar (rond de couleur) :
 - 🟢 Tout va bien
-- 🟡 Attention modérée (RAM >75% ou CPU >60%)
-- 🟠 Attention (RAM >85% ou CPU >80%)
+- 🟡 Attention modérée :
+  - RAM >75% ou CPU >60%
+  - OU >5 agents avec pression ressources (RAM >50% ou CPU >40%)
+- 🟠 Attention :
+  - RAM >85% ou CPU >80%
+  - OU >8 agents avec pression ressources (RAM >60% ou CPU >50%)
 - 🔴 Problème (orphelins détectés)
 
-Note: Le nombre d'agents n'est pas un indicateur de problème en soi.
+Note: Le nombre d'agents seul n'est pas un problème. Claude Code limite à 10 agents concurrents (les autres sont en queue). Le warning apparaît seulement si beaucoup d'agents + charge système.
 
 ### Fonctionnalités
 
