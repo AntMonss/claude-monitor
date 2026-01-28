@@ -2174,6 +2174,7 @@ function TasksPanel({
 }) {
   const [isClearing, setIsClearing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   // Get latest task status event
   const latestTaskEvent = useMemo(() => {
@@ -2189,6 +2190,8 @@ function TasksPanel({
   const tasks: Array<{ id: string; subject?: string; status: string }> = latestTaskEvent.tasks || [];
   const blockedCount = latestTaskEvent.blockedCount || 0;
   const pendingCount = latestTaskEvent.pendingCount || 0;
+  const displayedTasks = showAll ? tasks : tasks.slice(0, 5);
+  const hiddenCount = pendingCount - displayedTasks.length;
 
   const handleOpenTerminal = async () => {
     try {
@@ -2199,7 +2202,12 @@ function TasksPanel({
   };
 
   const handleClearTasks = async () => {
-    if (!confirm("Supprimer toutes les tâches de ~/.claude/tasks/ ?")) return;
+    const confirmed = confirm(
+      "⚠️ Attention : Ceci va supprimer les tâches anciennes (>7 jours) de ~/.claude/tasks/.\n\n" +
+      "Les tâches récentes (sessions en cours) seront préservées.\n\n" +
+      "Continuer ?"
+    );
+    if (!confirmed) return;
     setIsClearing(true);
     try {
       await fetch(`${API_ORIGIN}/api/tasks/clear`, { method: "POST" });
@@ -2252,11 +2260,11 @@ function TasksPanel({
       <CardContent className="space-y-4">
         {tasks.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Aucune tâche visible (limite: 5 premières)
+            Aucune tâche visible
           </p>
         ) : (
           <div className="space-y-2">
-            {tasks.map((task) => (
+            {displayedTasks.map((task) => (
               <div
                 key={task.id}
                 className={cn(
@@ -2279,10 +2287,21 @@ function TasksPanel({
                 </Badge>
               </div>
             ))}
-            {pendingCount > 5 && (
-              <p className="text-xs text-muted-foreground text-center">
-                + {pendingCount - 5} autres tâches
-              </p>
+            {hiddenCount > 0 && !showAll && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="w-full text-xs text-primary hover:text-primary/80 text-center py-1 hover:bg-secondary/50 rounded transition-colors"
+              >
+                + {hiddenCount} autres tâches (cliquer pour voir)
+              </button>
+            )}
+            {showAll && tasks.length > 5 && (
+              <button
+                onClick={() => setShowAll(false)}
+                className="w-full text-xs text-muted-foreground hover:text-foreground text-center py-1 hover:bg-secondary/50 rounded transition-colors"
+              >
+                Réduire
+              </button>
             )}
           </div>
         )}

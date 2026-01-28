@@ -226,7 +226,7 @@ app.post("/api/tasks/open-terminal", async (req, res) => {
   }
 });
 
-// Clear all tasks from ~/.claude/tasks/
+// Clear OLD tasks from ~/.claude/tasks/ (>7 days old only)
 app.post("/api/tasks/clear", async (req, res) => {
   try {
     const fs = await import("node:fs/promises");
@@ -235,18 +235,38 @@ app.post("/api/tasks/clear", async (req, res) => {
     try {
       await fs.access(CLAUDE_TASKS_DIR);
     } catch {
-      return res.json({ success: true, message: "No tasks directory" });
+      return res.json({ success: true, message: "No tasks directory", cleared: 0 });
     }
 
-    // Remove all subdirectories in tasks/
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let cleared = 0;
+    let preserved = 0;
+
+    // Only remove OLD subdirectories (>7 days)
     const entries = await fs.readdir(CLAUDE_TASKS_DIR, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        await fs.rm(path.join(CLAUDE_TASKS_DIR, entry.name), { recursive: true, force: true });
+        const dirPath = path.join(CLAUDE_TASKS_DIR, entry.name);
+        try {
+          const stat = await fs.stat(dirPath);
+          if (stat.mtimeMs < sevenDaysAgo) {
+            await fs.rm(dirPath, { recursive: true, force: true });
+            cleared++;
+          } else {
+            preserved++;
+          }
+        } catch {
+          // Skip if can't stat
+        }
       }
     }
 
-    res.json({ success: true, message: "Tasks cleared" });
+    res.json({
+      success: true,
+      message: `Cleared ${cleared} old task directories, preserved ${preserved} recent ones`,
+      cleared,
+      preserved
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
