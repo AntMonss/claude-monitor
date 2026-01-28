@@ -197,16 +197,11 @@ async function readTasks() {
 }
 
 /**
- * Detect patterns from collected data
- * Only considers sessions active in the last 2 hours
+ * Detect GLOBAL patterns (not session-specific)
+ * For session-specific patterns, use detectSessionPatterns
  */
-function detectPatterns(sessions, statsCache, tasks) {
+function detectGlobalPatterns(statsCache, tasks) {
   const patterns = {};
-  const now = Date.now();
-  const twoHoursAgo = now - 2 * 60 * 60 * 1000;
-
-  // Filter to only recently active sessions (last activity within 2 hours)
-  const activeSessions = sessions.filter((s) => s.lastTs > twoHoursAgo);
 
   // Calculate message/tool ratio from today's stats
   if (statsCache?.dailyActivity?.length > 0) {
@@ -214,46 +209,49 @@ function detectPatterns(sessions, statsCache, tasks) {
     if (today.messageCount && today.toolCallCount) {
       const ratio = today.messageCount / Math.max(1, today.toolCallCount);
       if (ratio > THRESHOLDS.messageToolRatio.error) {
-        patterns.highMessageToolRatio = "error";
+        patterns.highMessageToolRatio = { severity: "error", ratio: ratio.toFixed(1) };
       } else if (ratio > THRESHOLDS.messageToolRatio.warning) {
-        patterns.highMessageToolRatio = "warning";
+        patterns.highMessageToolRatio = { severity: "warning", ratio: ratio.toFixed(1) };
       }
     }
   }
 
-  // Check for long-running sessions (only recently active ones)
-  for (const session of activeSessions) {
-    const durationMs = session.lastTs - session.firstTs;
-    const durationMinutes = durationMs / 60000;
-
-    if (durationMinutes > THRESHOLDS.sessionDurationMinutes.error) {
-      // Store session info for display
-      const projectName = session.project?.split("/").pop() || "unknown";
-      patterns.longRunningSession = {
-        severity: "error",
-        sessionId: session.sessionId?.slice(0, 8),
-        project: projectName,
-        durationMinutes: Math.round(durationMinutes),
-      };
-      break;
-    } else if (durationMinutes > THRESHOLDS.sessionDurationMinutes.warning) {
-      const projectName = session.project?.split("/").pop() || "unknown";
-      patterns.longRunningSession = {
-        severity: "warning",
-        sessionId: session.sessionId?.slice(0, 8),
-        project: projectName,
-        durationMinutes: Math.round(durationMinutes),
-      };
-    }
-  }
-
-  // Check for old blocked tasks
+  // Check for blocked tasks
   const blockedTasks = tasks.filter(
     (t) => t.status === "in_progress" || (t.blockedBy && t.blockedBy.length > 0)
   );
-  if (blockedTasks.length > 0) {
-    // We don't have creation timestamp, so just flag if there are blocked tasks
-    patterns.blockedTasks = blockedTasks.length > 3 ? "warning" : null;
+  if (blockedTasks.length > 3) {
+    patterns.blockedTasks = { severity: "warning", count: blockedTasks.length };
+  }
+
+  return patterns;
+}
+
+/**
+ * Detect patterns specific to a session
+ */
+function detectSessionPatterns(session) {
+  const patterns = {};
+  const durationMs = session.lastTs - session.firstTs;
+  const durationMinutes = durationMs / 60000;
+
+  // Check for long-running session
+  if (durationMinutes > THRESHOLDS.sessionDurationMinutes.error) {
+    const projectName = session.project?.split("/").pop() || "unknown";
+    patterns.longRunningSession = {
+      severity: "error",
+      sessionId: session.sessionId?.slice(0, 8),
+      project: projectName,
+      durationMinutes: Math.round(durationMinutes),
+    };
+  } else if (durationMinutes > THRESHOLDS.sessionDurationMinutes.warning) {
+    const projectName = session.project?.split("/").pop() || "unknown";
+    patterns.longRunningSession = {
+      severity: "warning",
+      sessionId: session.sessionId?.slice(0, 8),
+      project: projectName,
+      durationMinutes: Math.round(durationMinutes),
+    };
   }
 
   return patterns;
@@ -272,8 +270,8 @@ async function collectAndEmit() {
     readTasks(),
   ]);
 
-  // Detect patterns
-  const patterns = detectPatterns(sessions, statsCache, tasks);
+  // Detect global patterns (ratio, blocked tasks)
+  const globalPatterns = detectGlobalPatterns(statsCache, tasks);
 
   // Emit session snapshots for recent active sessions (last 2 hours)
   const twoHoursAgo = now - 2 * 60 * 60 * 1000;
@@ -284,6 +282,10 @@ async function collectAndEmit() {
     const durationMs = session.lastTs - session.firstTs;
     const durationMinutes = Math.round(durationMs / 60000);
 
+    // Detect patterns specific to THIS session
+    const sessionPatterns = detectSessionPatterns(session);
+    const allPatterns = { ...globalPatterns, ...sessionPatterns };
+
     const event = {
       ts: now,
       source: "local",
@@ -292,7 +294,7 @@ async function collectAndEmit() {
       messageCount: session.messageCount,
       durationMinutes,
       project: session.project,
-      patterns: Object.keys(patterns).length > 0 ? patterns : undefined,
+      patterns: Object.keys(allPatterns).length > 0 ? allPatterns : undefined,
     };
 
     await appendJsonLine(CLAUDE_LOCAL_FILE, event);
@@ -321,7 +323,7 @@ async function collectAndEmit() {
       messageToolRatio: ratio ? parseFloat(ratio) : undefined,
       totalSessions: statsCache.totalSessions,
       totalMessages: statsCache.totalMessages,
-      patterns: Object.keys(patterns).length > 0 ? patterns : undefined,
+      patterns: Object.keys(globalPatterns).length > 0 ? globalPatterns : undefined,
     };
 
     await appendJsonLine(CLAUDE_LOCAL_FILE, statsEvent);
@@ -351,7 +353,7 @@ async function collectAndEmit() {
         subject: t.subject?.slice(0, 50),
         status: t.status,
       })),
-      patterns: blockedTasks.length > 3 ? { manyBlockedTasks: "warning" } : undefined,
+      patterns: blockedTasks.length > 3 ? { manyBlockedTasks: { severity: "warning", count: blockedTasks.length } } : undefined,
     };
 
     await appendJsonLine(CLAUDE_LOCAL_FILE, taskEvent);
@@ -362,7 +364,7 @@ async function collectAndEmit() {
   }
 
   // Log patterns if any
-  const patternKeys = Object.keys(patterns);
+  const patternKeys = Object.keys(globalPatterns);
   if (patternKeys.length > 0) {
     console.log(
       `[claude-local] patterns detected: ${patternKeys.join(", ")}`

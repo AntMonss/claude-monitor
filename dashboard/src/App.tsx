@@ -117,7 +117,7 @@ type ClaudeLocalEventRecord = {
   pendingCount?: number;
   blockedCount?: number;
   tasks?: Array<{ id: string; subject: string; status: string }>;
-  patterns?: Record<string, string>;
+  patterns?: Record<string, string | { severity: string; sessionId?: string; project?: string; durationMinutes?: number; ratio?: string; count?: number }>;
 };
 
 // Codex local events (from codex-local-collector)
@@ -135,7 +135,7 @@ type CodexLocalEventRecord = {
   model?: string;
   date?: string;
   sessionCount?: number;
-  patterns?: Record<string, string>;
+  patterns?: Record<string, string | { severity: string; sessionId?: string; project?: string; durationMinutes?: number }>;
 };
 
 // Monitoring mode
@@ -266,17 +266,74 @@ const METRIC_EXPLANATIONS: Record<string, {
       causes: ["Tu devrais relancer une nouvelle session"]
     }
   },
-  "local-tasks": {
-    what: "Nombre de tâches en attente de dépendances.",
+  network: {
+    what: "Débit réseau entrant et sortant de ton Mac.",
     warning: {
-      problem: "Plus de 2 tâches bloquées.",
-      implications: "Du travail ne peut pas avancer.",
-      causes: ["Dépendances entre tâches non résolues"]
+      problem: "Le réseau est utilisé intensivement.",
+      implications: "Possible ralentissement des requêtes API ou téléchargements.",
+      causes: ["Téléchargement en cours", "Sync cloud (iCloud, Dropbox)", "Mise à jour en arrière-plan"]
+    }
+  },
+  process: {
+    what: "Un processus qui consomme beaucoup de CPU.",
+    warning: {
+      problem: "Ce processus utilise plus de 30% du CPU.",
+      implications: "Il peut ralentir les autres applications.",
+      causes: ["Compilation en cours", "Process gourmand", "Possible fuite CPU"]
     },
     error: {
-      problem: "Plus de 5 tâches bloquées.",
-      implications: "Beaucoup de travail en attente. Priorisation nécessaire.",
-      causes: ["Chaîne de dépendances complexe", "Tâches abandonnées"]
+      problem: "Ce processus monopolise le CPU (>50%).",
+      implications: "Les autres apps seront très lentes.",
+      causes: ["Process bloqué ou en boucle", "Tâche intensive", "Envisage de le tuer si bloqué"]
+    }
+  },
+  "claude-local": {
+    what: "Données locales de Claude Code lues depuis ~/.claude/ (sessions, stats, tâches).",
+    warning: {
+      problem: "Un des indicateurs locaux est en warning (ratio, session, ou tâches).",
+      implications: "Vérifie les détails dans le tooltip pour identifier le problème.",
+      causes: [
+        "Session longue (>4h) → envisage de relancer",
+        "Ratio msg/tool élevé (>7) → agent peut-être bloqué",
+        "Tâches bloquées (>2) → dépendances non résolues"
+      ]
+    },
+    error: {
+      problem: "Un des indicateurs locaux est en erreur.",
+      implications: "Action recommandée selon l'indicateur concerné.",
+      causes: [
+        "Session très longue (>8h) → relance la session",
+        "Ratio msg/tool très élevé (>10) → reformule ta demande",
+        "Beaucoup de tâches bloquées (>5) → nettoie avec /tasks"
+      ]
+    }
+  },
+  "codex-local": {
+    what: "Statistiques locales de Codex CLI lues depuis ~/.codex/.",
+    warning: {
+      problem: "Beaucoup d'activité Codex.",
+      implications: "Normal si tu utilises activement Codex.",
+      causes: ["Utilisation intensive de Codex"]
+    }
+  },
+  "local-tasks": {
+    what: "Tâches créées par Claude Code (via TaskCreate) stockées dans ~/.claude/tasks/. Ce sont les tâches du panneau latéral que Claude utilise pour suivre son travail.",
+    warning: {
+      problem: "Des tâches sont marquées 'pending' ou 'in_progress' depuis un moment.",
+      implications: "Claude a peut-être oublié des tâches ou une session précédente a laissé des tâches non terminées.",
+      causes: [
+        "Session Claude interrompue avant de finir",
+        "Tâches créées mais jamais complétées",
+        "Tu peux les voir avec /tasks dans Claude Code"
+      ]
+    },
+    error: {
+      problem: "Beaucoup de tâches non complétées.",
+      implications: "Accumulation de travail planifié mais non fait.",
+      causes: [
+        "Nettoie avec /tasks puis supprime celles obsolètes",
+        "Ou ignore si ce sont de vieilles sessions"
+      ]
     }
   }
 };
@@ -307,6 +364,7 @@ type SourceStatus = {
   status: "ok" | "warning" | "error" | "unknown";
   value: string;
   detail: string;
+  details?: Array<{ label: string; value: string; status?: "ok" | "warning" | "error" }>; // Extra details for tooltip
   score: number;
   refreshMs: number;
   lastUpdate: number | null;
@@ -595,6 +653,21 @@ export default function App() {
       lastUpdate: systemLastUpdate,
     });
 
+    // Network (4th card - always shown)
+    const networkRx = latest?.networkRxPerSec ?? 0;
+    const networkTx = latest?.networkTxPerSec ?? 0;
+    sources.push({
+      id: "network",
+      name: "Réseau",
+      icon: "network",
+      status: !hasData ? "unknown" : "ok",
+      value: hasData ? formatBps(networkRx + networkTx) : "—",
+      detail: `↓ ${formatBps(networkRx)} · ↑ ${formatBps(networkTx)}`,
+      score: 0, // Network itself is rarely the direct cause
+      refreshMs: 2000,
+      lastUpdate: systemLastUpdate,
+    });
+
     // Claude Code REAL API latency (from OTEL)
     const hasClaudeData = events.claudeEvents.length > 0;
     const claudeLatency = claudeApiStats?.latest;
@@ -630,78 +703,86 @@ export default function App() {
       });
     }
 
-    // Network throughput (low = potential issue)
-    const networkRx = latest?.networkRxPerSec ?? 0;
-    const networkTx = latest?.networkTxPerSec ?? 0;
-    sources.push({
-      id: "network",
-      name: "Réseau",
-      icon: "network",
-      status: !hasData ? "unknown" : "ok",
-      value: hasData ? formatBps(networkRx + networkTx) : "—",
-      detail: `↓ ${formatBps(networkRx)} · ↑ ${formatBps(networkTx)}`,
-      score: 0, // Network itself is rarely the direct cause
-      refreshMs: 2000,
-      lastUpdate: systemLastUpdate,
-    });
-
-    // Claude Local stats (from local collector)
+    // Claude Local stats (merged card from local collector)
     const latestLocalStats = events.claudeLocalEvents
       .filter((e) => e.event === "daily_stats")
+      .at(-1);
+    const latestSession = events.claudeLocalEvents
+      .filter((e) => e.event === "session_snapshot")
+      .at(-1);
+    const latestTaskStatus = events.claudeLocalEvents
+      .filter((e) => e.event === "task_status")
       .at(-1);
     const hasLocalData = events.claudeLocalEvents.length > 0;
     const localLastUpdate = events.claudeLocalEvents.at(-1)?.ts ?? null;
 
-    if (hasLocalData && latestLocalStats) {
-      const ratio = latestLocalStats.messageToolRatio ?? 0;
+    if (hasLocalData) {
+      // Calculate individual statuses
+      const ratio = latestLocalStats?.messageToolRatio ?? 0;
+      const ratioStatus: "ok" | "warning" | "error" = ratio > 10 ? "error" : ratio > 7 ? "warning" : "ok";
+
+      const durationMin = latestSession?.durationMinutes ?? 0;
+      const sessionStatus: "ok" | "warning" | "error" = durationMin > 480 ? "error" : durationMin > 240 ? "warning" : "ok";
+
+      const blocked = latestTaskStatus?.blockedCount ?? 0;
+      const pending = latestTaskStatus?.pendingCount ?? 0;
+      const tasksStatus: "ok" | "warning" | "error" = blocked > 5 ? "error" : blocked > 2 ? "warning" : "ok";
+
+      // Merge status: worst wins
+      const statuses = [ratioStatus, sessionStatus, tasksStatus];
+      const mergedStatus: "ok" | "warning" | "error" = statuses.includes("error") ? "error" : statuses.includes("warning") ? "warning" : "ok";
+
+      // Calculate score (max of all)
+      const scores = [
+        ratio > 10 ? 85 : ratio > 7 ? 55 : 0,
+        durationMin > 480 ? 70 : durationMin > 240 ? 40 : 0,
+        blocked > 5 ? 70 : blocked > 2 ? 35 : 0,
+      ];
+      const maxScore = Math.max(...scores);
+
+      // Build details array for tooltip
+      const details: Array<{ label: string; value: string; status?: "ok" | "warning" | "error" }> = [];
+
+      if (latestLocalStats) {
+        details.push({
+          label: "Ratio Msg/Tool",
+          value: `${ratio.toFixed(1)} (${latestLocalStats.messageCount ?? 0} msgs / ${latestLocalStats.toolCallCount ?? 0} tools)`,
+          status: ratioStatus,
+        });
+      }
+
+      if (latestSession && durationMin > 0) {
+        details.push({
+          label: "Session",
+          value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m · ${latestSession.messageCount ?? 0} messages`,
+          status: sessionStatus,
+        });
+      }
+
+      if (latestTaskStatus && (pending > 0 || blocked > 0)) {
+        details.push({
+          label: "Tâches",
+          value: `${pending} en attente · ${blocked} bloquées`,
+          status: tasksStatus,
+        });
+      }
+
+      // Main value: show most relevant info
+      const mainValue = durationMin > 0
+        ? `${Math.floor(durationMin / 60)}h${durationMin % 60}m`
+        : ratio > 0
+          ? `ratio ${ratio.toFixed(1)}`
+          : "actif";
+
       sources.push({
-        id: "local-ratio",
-        name: "Message/Tool Ratio",
+        id: "claude-local",
+        name: "Claude (Local)",
         icon: "terminal",
-        status: ratio > 10 ? "error" : ratio > 7 ? "warning" : "ok",
-        value: ratio > 0 ? ratio.toFixed(1) : "—",
-        detail: `${latestLocalStats.messageCount ?? 0} msgs / ${latestLocalStats.toolCallCount ?? 0} tools`,
-        score: ratio > 10 ? 85 : ratio > 7 ? 55 : 0,
-        refreshMs: 30000,
-        lastUpdate: localLastUpdate,
-      });
-    }
-
-    // Local session info
-    const latestSession = events.claudeLocalEvents
-      .filter((e) => e.event === "session_snapshot")
-      .at(-1);
-
-    if (latestSession && latestSession.durationMinutes) {
-      const durationMin = latestSession.durationMinutes;
-      sources.push({
-        id: "local-session",
-        name: "Session Active",
-        icon: "terminal",
-        status: durationMin > 480 ? "error" : durationMin > 240 ? "warning" : "ok",
-        value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m`,
-        detail: `${latestSession.messageCount ?? 0} messages`,
-        score: durationMin > 480 ? 70 : durationMin > 240 ? 40 : 0,
-        refreshMs: 30000,
-        lastUpdate: localLastUpdate,
-      });
-    }
-
-    // Blocked tasks
-    const latestTaskStatus = events.claudeLocalEvents
-      .filter((e) => e.event === "task_status")
-      .at(-1);
-
-    if (latestTaskStatus && (latestTaskStatus.blockedCount ?? 0) > 0) {
-      const blocked = latestTaskStatus.blockedCount ?? 0;
-      sources.push({
-        id: "local-tasks",
-        name: "Tâches Bloquées",
-        icon: "terminal",
-        status: blocked > 5 ? "error" : blocked > 2 ? "warning" : "ok",
-        value: `${blocked}`,
-        detail: `${latestTaskStatus.pendingCount ?? 0} en attente`,
-        score: blocked > 5 ? 70 : blocked > 2 ? 35 : 0,
+        status: mergedStatus,
+        value: mainValue,
+        detail: `${latestLocalStats?.messageCount ?? 0} msgs aujourd'hui`,
+        details,
+        score: maxScore,
         refreshMs: 30000,
         lastUpdate: localLastUpdate,
       });
@@ -807,8 +888,9 @@ export default function App() {
     const patternList: Array<{ name: string; severity: string }> = [];
     for (const event of events.claudeLocalEvents.slice(-20)) {
       if (event.patterns) {
-        for (const [pattern, severity] of Object.entries(event.patterns)) {
-          if (severity) {
+        for (const [pattern, value] of Object.entries(event.patterns)) {
+          if (value) {
+            const severity = typeof value === "object" ? value.severity : value;
             patternList.push({ name: pattern, severity });
           }
         }
@@ -1042,7 +1124,12 @@ endpoint = "http://localhost:4319"`}
         )}
 
         {/* Metrics History Chart - First for visibility */}
-        <MetricsHistoryChart systemMetrics={events.systemMetrics} latencyEvents={events.latencyEvents} />
+        <MetricsHistoryChart
+          systemMetrics={events.systemMetrics}
+          latencyEvents={events.latencyEvents}
+          claudeEvents={events.claudeEvents}
+          claudeLocalEvents={events.claudeLocalEvents}
+        />
 
         {/* Pattern Analysis Panel (shown only when patterns detected) */}
         <PatternAnalysisPanel
@@ -1408,14 +1495,17 @@ endpoint = "http://localhost:4319"`}
                         {(selected.data as ClaudeLocalEventRecord).patterns && Object.keys((selected.data as ClaudeLocalEventRecord).patterns!).length > 0 && (
                           <div className="mt-3 pt-3 border-t border-border">
                             <p className="text-xs uppercase tracking-wide text-amber-400 mb-2">Patterns détectés</p>
-                            {Object.entries((selected.data as ClaudeLocalEventRecord).patterns!).map(([key, severity]) => (
-                              <div key={key} className="flex items-center justify-between text-sm">
-                                <span className="text-muted-foreground">{key}</span>
-                                <Badge variant={severity === "error" ? "destructive" : "warning"}>
-                                  {severity}
-                                </Badge>
-                              </div>
-                            ))}
+                            {Object.entries((selected.data as ClaudeLocalEventRecord).patterns!).map(([key, value]) => {
+                              const severity = typeof value === "object" ? value.severity : value;
+                              return (
+                                <div key={key} className="flex items-center justify-between text-sm">
+                                  <span className="text-muted-foreground">{key}</span>
+                                  <Badge variant={severity === "error" ? "destructive" : "warning"}>
+                                    {severity}
+                                  </Badge>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -1626,7 +1716,7 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
       </div>
 
       {/* Tooltip - Click to lock, click again or X to close */}
-      {showTooltip && explanation && (
+      {showTooltip && (explanation || source.details) && (
         <div
           className={cn(
             "absolute left-0 top-full mt-2 z-50 w-80 rounded-lg border bg-popover p-4 shadow-lg text-popover-foreground select-text",
@@ -1637,7 +1727,7 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
           <div className="flex items-start justify-between gap-2 mb-2">
             <p className="font-medium flex items-center gap-2">
               <Info className="h-4 w-4 text-primary" />
-              {explanation.what}
+              {explanation?.what || source.name}
             </p>
             {locked && (
               <button
@@ -1648,6 +1738,26 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
               </button>
             )}
           </div>
+
+          {/* Show details array if present (for merged cards like Claude Local) */}
+          {source.details && source.details.length > 0 && (
+            <div className="border-t border-border pt-3 mt-2 space-y-2">
+              {source.details.map((detail, i) => (
+                <div key={i} className="flex items-start justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">{detail.label}</span>
+                  <span className={cn(
+                    "text-xs font-medium text-right",
+                    detail.status === "error" ? "text-red-400" :
+                    detail.status === "warning" ? "text-amber-400" :
+                    "text-green-400"
+                  )}>
+                    {detail.status === "error" ? "🔴 " : detail.status === "warning" ? "🟡 " : "🟢 "}
+                    {detail.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {statusContent && (
             <div className="border-t border-border pt-3 mt-3 space-y-2">
@@ -1671,7 +1781,7 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
             </div>
           )}
 
-          {!statusContent && (
+          {!statusContent && !source.details && (
             <p className="text-xs text-green-400 mt-2">
               Tout va bien de ce côté.
             </p>
@@ -1719,15 +1829,18 @@ const PATTERN_SUGGESTIONS: Record<string, { title: string; suggestion: string }>
 function MetricsHistoryChart({
   systemMetrics,
   latencyEvents,
+  claudeEvents,
+  claudeLocalEvents,
 }: {
   systemMetrics: SystemMetricsRecord[];
   latencyEvents: LatencyEventRecord[];
+  claudeEvents: ClaudeEventRecord[];
+  claudeLocalEvents: ClaudeLocalEventRecord[];
 }) {
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["cpu", "ram"]);
 
-  // Prepare chart data from system metrics
+  // Prepare chart data from all metrics
   const chartData = useMemo(() => {
-    // Combine system metrics with latency data
     const dataMap = new Map<number, Record<string, number | string>>();
 
     // Add system metrics
@@ -1744,20 +1857,40 @@ function MetricsHistoryChart({
       dataMap.set(timeKey, existing);
     }
 
-    // Add latency data
+    // Add latency ping data
     for (const l of latencyEvents) {
       const timeKey = Math.floor(l.ts / 1000) * 1000;
       const existing = dataMap.get(timeKey) || { time: timeKey };
-      existing.anthropic = l.anthropicMs ?? 0;
-      existing.openai = l.openaiMs ?? 0;
+      existing.anthropicPing = l.anthropicMs ?? 0;
       dataMap.set(timeKey, existing);
+    }
+
+    // Add Claude OTEL API latency (real API calls)
+    for (const c of claudeEvents) {
+      if (c.event === "api_request" && c.duration_ms) {
+        const timeKey = Math.floor(c.ts / 1000) * 1000;
+        const existing = dataMap.get(timeKey) || { time: timeKey };
+        // Keep the max latency if multiple calls in same second
+        existing.claudeApi = Math.max((existing.claudeApi as number) || 0, c.duration_ms);
+        dataMap.set(timeKey, existing);
+      }
+    }
+
+    // Add Claude local stats (message/tool ratio)
+    for (const l of claudeLocalEvents) {
+      if (l.event === "daily_stats" && l.messageToolRatio) {
+        const timeKey = Math.floor(l.ts / 1000) * 1000;
+        const existing = dataMap.get(timeKey) || { time: timeKey };
+        existing.ratio = l.messageToolRatio;
+        dataMap.set(timeKey, existing);
+      }
     }
 
     // Sort by time and return
     return Array.from(dataMap.values())
       .sort((a, b) => (a.time as number) - (b.time as number))
       .slice(-60); // Keep last 60 data points
-  }, [systemMetrics, latencyEvents]);
+  }, [systemMetrics, latencyEvents, claudeEvents, claudeLocalEvents]);
 
   const metricConfigs = [
     { key: "cpu", label: "CPU", color: "#3b82f6", unit: "%", domain: [0, 100] },
@@ -1765,7 +1898,9 @@ function MetricsHistoryChart({
     { key: "swap", label: "Swap", color: "#f59e0b", unit: "GB", domain: [0, 8] },
     { key: "networkRx", label: "Net ↓", color: "#10b981", unit: "KB/s", domain: [0, "auto"] },
     { key: "networkTx", label: "Net ↑", color: "#06b6d4", unit: "KB/s", domain: [0, "auto"] },
-    { key: "anthropic", label: "Anthropic", color: "#f97316", unit: "ms", domain: [0, "auto"] },
+    { key: "anthropicPing", label: "Ping API", color: "#f97316", unit: "ms", domain: [0, "auto"] },
+    { key: "claudeApi", label: "Claude API", color: "#ec4899", unit: "ms", domain: [0, "auto"] },
+    { key: "ratio", label: "Msg/Tool", color: "#a855f7", unit: "", domain: [0, 15] },
   ];
 
   const toggleMetric = (key: string) => {
@@ -2017,7 +2152,9 @@ function PatternAnalysisPanel({
                 </p>
               </div>
               <Badge variant={severity === "error" ? "destructive" : "warning"}>
-                {count > 1 ? `${count}x` : severity}
+                {details?.durationMinutes
+                  ? `${Math.floor(details.durationMinutes / 60)}h${details.durationMinutes % 60}m`
+                  : severity}
               </Badge>
             </div>
           </div>
@@ -2028,13 +2165,16 @@ function PatternAnalysisPanel({
 }
 
 /**
- * Tasks Panel - Shows pending and blocked tasks
+ * Tasks Panel - Shows pending and blocked tasks with actions
  */
 function TasksPanel({
   claudeLocalEvents,
 }: {
   claudeLocalEvents: ClaudeLocalEventRecord[];
 }) {
+  const [isClearing, setIsClearing] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+
   // Get latest task status event
   const latestTaskEvent = useMemo(() => {
     return claudeLocalEvents
@@ -2046,9 +2186,29 @@ function TasksPanel({
     return null;
   }
 
-  const tasks = latestTaskEvent.tasks || [];
+  const tasks: Array<{ id: string; subject?: string; status: string }> = latestTaskEvent.tasks || [];
   const blockedCount = latestTaskEvent.blockedCount || 0;
   const pendingCount = latestTaskEvent.pendingCount || 0;
+
+  const handleOpenTerminal = async () => {
+    try {
+      await fetch(`${API_ORIGIN}/api/tasks/open-terminal`, { method: "POST" });
+    } catch (err) {
+      console.error("Failed to open terminal:", err);
+    }
+  };
+
+  const handleClearTasks = async () => {
+    if (!confirm("Supprimer toutes les tâches de ~/.claude/tasks/ ?")) return;
+    setIsClearing(true);
+    try {
+      await fetch(`${API_ORIGIN}/api/tasks/clear`, { method: "POST" });
+    } catch (err) {
+      console.error("Failed to clear tasks:", err);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   return (
     <Card>
@@ -2057,6 +2217,14 @@ function TasksPanel({
           <CardTitle className="text-base font-medium flex items-center gap-2">
             <Terminal className="h-4 w-4" />
             Tâches Claude Code
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+              onClick={() => setShowHelp(!showHelp)}
+            >
+              <Info className="h-3.5 w-3.5" />
+            </Button>
           </CardTitle>
           <div className="flex gap-2">
             {pendingCount > 0 && (
@@ -2067,8 +2235,21 @@ function TasksPanel({
             )}
           </div>
         </div>
+        {showHelp && (
+          <div className="mt-2 rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">
+            <p className="mb-2">
+              Ces tâches viennent de <code className="text-xs bg-background px-1 rounded">~/.claude/tasks/</code>.
+              Ce sont des todo lists créées par Claude Code dans des sessions précédentes.
+            </p>
+            <p>
+              <strong>Bloquées</strong> = attendent qu'une autre tâche soit finie.
+              <br />
+              <strong>Pending</strong> = en attente d'être traitées.
+            </p>
+          </div>
+        )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
         {tasks.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Aucune tâche visible (limite: 5 premières)
@@ -2089,20 +2270,44 @@ function TasksPanel({
                   <p className="truncate text-sm font-medium">
                     {task.subject || task.id}
                   </p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    {task.id}
-                  </p>
                 </div>
                 <Badge
                   variant={task.status === "in_progress" ? "default" : "secondary"}
-                  className="ml-2 shrink-0"
+                  className="ml-2 shrink-0 text-[10px]"
                 >
-                  {task.status === "in_progress" ? "En cours" : task.status}
+                  {task.status === "in_progress" ? "en cours" : task.status}
                 </Badge>
               </div>
             ))}
+            {pendingCount > 5 && (
+              <p className="text-xs text-muted-foreground text-center">
+                + {pendingCount - 5} autres tâches
+              </p>
+            )}
           </div>
         )}
+
+        <div className="flex gap-2 pt-2 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 gap-2"
+            onClick={handleOpenTerminal}
+          >
+            <Terminal className="h-3.5 w-3.5" />
+            Ouvrir Claude Code
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-muted-foreground hover:text-destructive"
+            onClick={handleClearTasks}
+            disabled={isClearing}
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            {isClearing ? "..." : "Nettoyer"}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

@@ -99,6 +99,18 @@ Chaque carte de diagnostic affiche un tooltip au hover avec :
 
 Métriques documentées : `cpu`, `memory`, `swap`, `claude-api`, `local-ratio`, `local-session`, `local-tasks`
 
+### Patterns Détectés
+
+Les patterns sont détectés par le collector local et affichés dans la section "Patterns Détectés" :
+
+| Pattern | Seuil Warning | Seuil Error | Détails |
+|---------|---------------|-------------|---------|
+| **longRunningSession** | 4h (240min) | 8h (480min) | Affiche projet, sessionId, durée |
+| **highMessageToolRatio** | >7.0 | >10.0 | Ratio messages/outils trop élevé |
+| **blockedTasks** | >3 tâches | - | Tâches en attente de dépendances |
+
+Les patterns sont **spécifiques à chaque session** : seules les sessions qui dépassent les seuils affichent le pattern.
+
 ### Diagnostic Claude (bouton)
 
 Le bouton "Diagnostic Claude" dans le panneau de diagnostic :

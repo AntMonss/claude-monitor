@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
-export const DATA_DIR = path.resolve("temp", "ai-dashboard");
+// Use absolute path relative to this file, not cwd
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const DATA_DIR = path.resolve(__dirname, "..", "temp", "ai-dashboard");
 export const STATE_FILE = path.join(DATA_DIR, "watching-state.json");
 
 export const FILE_NAMES = {

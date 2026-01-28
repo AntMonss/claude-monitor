@@ -206,6 +206,52 @@ async function runClaudeAnalysis(prompt) {
   });
 }
 
+// Task management endpoints
+const CLAUDE_TASKS_DIR = path.join(process.env.HOME || "", ".claude", "tasks");
+
+// Open terminal with Claude Code to manage tasks
+app.post("/api/tasks/open-terminal", async (req, res) => {
+  try {
+    // Use AppleScript to open Terminal with claude command
+    const script = `
+      tell application "Terminal"
+        activate
+        do script "cd ~ && claude --resume"
+      end tell
+    `;
+    spawn("osascript", ["-e", script], { detached: true, stdio: "ignore" });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Clear all tasks from ~/.claude/tasks/
+app.post("/api/tasks/clear", async (req, res) => {
+  try {
+    const fs = await import("node:fs/promises");
+
+    // Check if directory exists
+    try {
+      await fs.access(CLAUDE_TASKS_DIR);
+    } catch {
+      return res.json({ success: true, message: "No tasks directory" });
+    }
+
+    // Remove all subdirectories in tasks/
+    const entries = await fs.readdir(CLAUDE_TASKS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await fs.rm(path.join(CLAUDE_TASKS_DIR, entry.name), { recursive: true, force: true });
+      }
+    }
+
+    res.json({ success: true, message: "Tasks cleared" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Periodic rotation of JSONL files (every 5 minutes)
 setInterval(async () => {
   const files = [FILE_NAMES.system, FILE_NAMES.process, FILE_NAMES.codex, FILE_NAMES.codexLocal, FILE_NAMES.latency, FILE_NAMES.claude, FILE_NAMES.claudeLocal];
