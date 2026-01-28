@@ -22,6 +22,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import {
+  ChartContainer,
+  ChartTooltip,
+  Area,
+  AreaChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "@/components/ui/chart";
 import { cn, formatTimestamp } from "@/lib/utils";
 
 const API_ORIGIN = import.meta.env.VITE_API_ORIGIN ?? "";
@@ -1056,6 +1066,9 @@ endpoint = "http://localhost:4319"`}
           />
         </div>
 
+        {/* Metrics History Chart */}
+        <MetricsHistoryChart systemMetrics={events.systemMetrics} latencyEvents={events.latencyEvents} />
+
         {/* Timeline */}
         <Card>
           <CardHeader className="pb-3">
@@ -1635,6 +1648,186 @@ const PATTERN_SUGGESTIONS: Record<string, { title: string; suggestion: string }>
     suggestion: "Beaucoup de prompts envoyés récemment. Vérifiez si l'agent n'est pas bloqué dans une boucle.",
   },
 };
+
+/**
+ * Metrics History Chart - Visualizes system metrics over time
+ */
+function MetricsHistoryChart({
+  systemMetrics,
+  latencyEvents,
+}: {
+  systemMetrics: SystemMetricsRecord[];
+  latencyEvents: LatencyEventRecord[];
+}) {
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["cpu", "ram"]);
+
+  // Prepare chart data from system metrics
+  const chartData = useMemo(() => {
+    // Combine system metrics with latency data
+    const dataMap = new Map<number, Record<string, number | string>>();
+
+    // Add system metrics
+    for (const m of systemMetrics) {
+      const timeKey = Math.floor(m.ts / 1000) * 1000; // Round to seconds
+      const existing = dataMap.get(timeKey) || { time: timeKey };
+      existing.cpu = m.cpuLoad ?? 0;
+      existing.ram = m.memTotalMb && m.memUsedMb
+        ? Math.round((m.memUsedMb / m.memTotalMb) * 100)
+        : 0;
+      existing.swap = m.swapUsedMb ? Math.round(m.swapUsedMb / 1024 * 10) / 10 : 0; // GB
+      existing.networkRx = m.networkRxPerSec ? Math.round(m.networkRxPerSec / 1024) : 0; // KB/s
+      existing.networkTx = m.networkTxPerSec ? Math.round(m.networkTxPerSec / 1024) : 0; // KB/s
+      dataMap.set(timeKey, existing);
+    }
+
+    // Add latency data
+    for (const l of latencyEvents) {
+      const timeKey = Math.floor(l.ts / 1000) * 1000;
+      const existing = dataMap.get(timeKey) || { time: timeKey };
+      existing.anthropic = l.anthropicMs ?? 0;
+      existing.openai = l.openaiMs ?? 0;
+      dataMap.set(timeKey, existing);
+    }
+
+    // Sort by time and return
+    return Array.from(dataMap.values())
+      .sort((a, b) => (a.time as number) - (b.time as number))
+      .slice(-60); // Keep last 60 data points
+  }, [systemMetrics, latencyEvents]);
+
+  const metricConfigs = [
+    { key: "cpu", label: "CPU", color: "#3b82f6", unit: "%", domain: [0, 100] },
+    { key: "ram", label: "RAM", color: "#8b5cf6", unit: "%", domain: [0, 100] },
+    { key: "swap", label: "Swap", color: "#f59e0b", unit: "GB", domain: [0, 8] },
+    { key: "networkRx", label: "Net ↓", color: "#10b981", unit: "KB/s", domain: [0, "auto"] },
+    { key: "networkTx", label: "Net ↑", color: "#06b6d4", unit: "KB/s", domain: [0, "auto"] },
+    { key: "anthropic", label: "Anthropic", color: "#f97316", unit: "ms", domain: [0, "auto"] },
+  ];
+
+  const toggleMetric = (key: string) => {
+    setSelectedMetrics(prev =>
+      prev.includes(key)
+        ? prev.filter(k => k !== key)
+        : [...prev, key]
+    );
+  };
+
+  const formatTime = (ts: number) => {
+    const date = new Date(ts);
+    return date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const formatTooltipValue = (value: number, name: string) => {
+    const config = metricConfigs.find(c => c.label === name);
+    return `${value}${config?.unit || ""}`;
+  };
+
+  if (chartData.length < 2) {
+    return null; // Not enough data to show a chart
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="text-base font-medium flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary" />
+            Historique des métriques
+          </CardTitle>
+          <div className="flex flex-wrap gap-1.5">
+            {metricConfigs.map(config => (
+              <button
+                key={config.key}
+                onClick={() => toggleMetric(config.key)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-all",
+                  selectedMetrics.includes(config.key)
+                    ? "bg-secondary text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <div
+                  className="h-2 w-2 rounded-full"
+                  style={{
+                    backgroundColor: selectedMetrics.includes(config.key)
+                      ? config.color
+                      : "currentColor",
+                    opacity: selectedMetrics.includes(config.key) ? 1 : 0.3,
+                  }}
+                />
+                {config.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ChartContainer className="h-[200px]">
+          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <defs>
+              {metricConfigs.map(config => (
+                <linearGradient key={config.key} id={`gradient-${config.key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={config.color} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={config.color} stopOpacity={0} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/30" />
+            <XAxis
+              dataKey="time"
+              tickFormatter={formatTime}
+              tick={{ fontSize: 10 }}
+              tickLine={false}
+              axisLine={false}
+              className="text-muted-foreground"
+            />
+            <YAxis
+              tick={{ fontSize: 10 }}
+              tickLine={false}
+              axisLine={false}
+              className="text-muted-foreground"
+              domain={[0, 100]}
+            />
+            <Tooltip
+              content={({ active, payload, label }) => (
+                <ChartTooltip
+                  active={active}
+                  payload={payload?.map(p => ({
+                    name: p.name as string,
+                    value: p.value as number,
+                    color: p.color as string,
+                    dataKey: p.dataKey as string,
+                  }))}
+                  label={formatTime(label as number)}
+                  formatter={formatTooltipValue}
+                />
+              )}
+            />
+            {metricConfigs.map(config =>
+              selectedMetrics.includes(config.key) ? (
+                <Area
+                  key={config.key}
+                  type="monotone"
+                  dataKey={config.key}
+                  name={config.label}
+                  stroke={config.color}
+                  strokeWidth={2}
+                  fill={`url(#gradient-${config.key})`}
+                  dot={false}
+                  activeDot={{ r: 4, strokeWidth: 2 }}
+                />
+              ) : null
+            )}
+          </AreaChart>
+        </ChartContainer>
+        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <span>{chartData.length} points · Intervalle ~10s</span>
+          <span>Dernière mise à jour: {formatTime(chartData[chartData.length - 1]?.time as number)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function PatternAnalysisPanel({
   claudeLocalEvents,
