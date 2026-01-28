@@ -272,6 +272,50 @@ app.post("/api/tasks/clear", async (req, res) => {
   }
 });
 
+// Delete a specific task
+app.post("/api/tasks/delete", async (req, res) => {
+  try {
+    const fs = await import("node:fs/promises");
+    const { taskId, taskDir } = req.body;
+
+    if (!taskId) {
+      return res.status(400).json({ success: false, error: "Missing taskId" });
+    }
+
+    // If taskDir is provided, delete just that task file
+    if (taskDir) {
+      const taskFile = path.join(CLAUDE_TASKS_DIR, taskDir, `${taskId}.json`);
+      try {
+        await fs.unlink(taskFile);
+        return res.json({ success: true, message: `Deleted task ${taskId}` });
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          return res.json({ success: true, message: "Task file not found (already deleted?)" });
+        }
+        throw err;
+      }
+    }
+
+    // Otherwise, search for the task in all directories
+    const entries = await fs.readdir(CLAUDE_TASKS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const taskFile = path.join(CLAUDE_TASKS_DIR, entry.name, `${taskId}.json`);
+        try {
+          await fs.unlink(taskFile);
+          return res.json({ success: true, message: `Deleted task ${taskId} from ${entry.name}` });
+        } catch {
+          // Task not in this directory, continue
+        }
+      }
+    }
+
+    res.json({ success: true, message: "Task not found" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Periodic rotation of JSONL files (every 5 minutes)
 setInterval(async () => {
   const files = [FILE_NAMES.system, FILE_NAMES.process, FILE_NAMES.codex, FILE_NAMES.codexLocal, FILE_NAMES.latency, FILE_NAMES.claude, FILE_NAMES.claudeLocal];

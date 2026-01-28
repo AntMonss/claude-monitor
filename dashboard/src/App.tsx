@@ -2172,7 +2172,6 @@ function TasksPanel({
 }: {
   claudeLocalEvents: ClaudeLocalEventRecord[];
 }) {
-  const [isClearing, setIsClearing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
@@ -2187,11 +2186,12 @@ function TasksPanel({
     return null;
   }
 
-  const tasks: Array<{ id: string; subject?: string; status: string }> = latestTaskEvent.tasks || [];
+  const tasks: Array<{ id: string; subject?: string; status: string; dir?: string }> = latestTaskEvent.tasks || [];
   const blockedCount = latestTaskEvent.blockedCount || 0;
   const pendingCount = latestTaskEvent.pendingCount || 0;
   const displayedTasks = showAll ? tasks : tasks.slice(0, 5);
   const hiddenCount = pendingCount - displayedTasks.length;
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
 
   const handleOpenTerminal = async () => {
     try {
@@ -2201,20 +2201,20 @@ function TasksPanel({
     }
   };
 
-  const handleClearTasks = async () => {
-    const confirmed = confirm(
-      "⚠️ Attention : Ceci va supprimer les tâches anciennes (>7 jours) de ~/.claude/tasks/.\n\n" +
-      "Les tâches récentes (sessions en cours) seront préservées.\n\n" +
-      "Continuer ?"
-    );
+  const handleDeleteTask = async (task: { id: string; subject?: string; dir?: string }) => {
+    const confirmed = confirm(`Supprimer la tâche "${task.subject || task.id}" ?`);
     if (!confirmed) return;
-    setIsClearing(true);
+    setDeletingTaskId(task.id);
     try {
-      await fetch(`${API_ORIGIN}/api/tasks/clear`, { method: "POST" });
+      await fetch(`${API_ORIGIN}/api/tasks/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: task.id, taskDir: task.dir }),
+      });
     } catch (err) {
-      console.error("Failed to clear tasks:", err);
+      console.error("Failed to delete task:", err);
     } finally {
-      setIsClearing(false);
+      setDeletingTaskId(null);
     }
   };
 
@@ -2268,7 +2268,7 @@ function TasksPanel({
               <div
                 key={task.id}
                 className={cn(
-                  "flex items-center justify-between rounded-lg border px-3 py-2",
+                  "group flex items-center justify-between rounded-lg border px-3 py-2",
                   task.status === "in_progress"
                     ? "border-blue-500/30 bg-blue-500/10"
                     : "border-border bg-secondary/30"
@@ -2279,12 +2279,26 @@ function TasksPanel({
                     {task.subject || task.id}
                   </p>
                 </div>
-                <Badge
-                  variant={task.status === "in_progress" ? "default" : "secondary"}
-                  className="ml-2 shrink-0 text-[10px]"
-                >
-                  {task.status === "in_progress" ? "en cours" : task.status}
-                </Badge>
+                <div className="flex items-center gap-1.5 ml-2">
+                  <Badge
+                    variant={task.status === "in_progress" ? "default" : "secondary"}
+                    className="shrink-0 text-[10px]"
+                  >
+                    {task.status === "in_progress" ? "en cours" : task.status}
+                  </Badge>
+                  <button
+                    onClick={() => handleDeleteTask(task)}
+                    disabled={deletingTaskId === task.id}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive transition-all"
+                    title="Supprimer cette tâche"
+                  >
+                    {deletingTaskId === task.id ? (
+                      <span className="text-xs">...</span>
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
               </div>
             ))}
             {hiddenCount > 0 && !showAll && (
@@ -2306,25 +2320,15 @@ function TasksPanel({
           </div>
         )}
 
-        <div className="flex gap-2 pt-2 border-t border-border">
+        <div className="pt-2 border-t border-border">
           <Button
             variant="outline"
             size="sm"
-            className="flex-1 gap-2"
+            className="w-full gap-2"
             onClick={handleOpenTerminal}
           >
             <Terminal className="h-3.5 w-3.5" />
             Ouvrir Claude Code
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-2 text-muted-foreground hover:text-destructive"
-            onClick={handleClearTasks}
-            disabled={isClearing}
-          >
-            <XCircle className="h-3.5 w-3.5" />
-            {isClearing ? "..." : "Nettoyer"}
           </Button>
         </div>
       </CardContent>

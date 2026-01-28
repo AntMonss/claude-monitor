@@ -348,10 +348,11 @@ async function collectAndEmit() {
       event: "task_status",
       pendingCount: pendingTasks.length,
       blockedCount: blockedTasks.length,
-      tasks: pendingTasks.slice(0, 5).map((t) => ({
+      tasks: pendingTasks.slice(0, 10).map((t) => ({
         id: t.id,
         subject: t.subject?.slice(0, 50),
         status: t.status,
+        dir: t.dir,
       })),
       patterns: blockedTasks.length > 3 ? { manyBlockedTasks: { severity: "warning", count: blockedTasks.length } } : undefined,
     };
