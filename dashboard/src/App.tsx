@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -9,6 +9,7 @@ import {
   EyeOff,
   Globe,
   HardDrive,
+  Info,
   MemoryStick,
   Network,
   Server,
@@ -130,6 +131,146 @@ type CodexLocalEventRecord = {
 // Monitoring mode
 type MonitoringMode = "active" | "passive";
 
+// Metric explanations for tooltips
+const METRIC_EXPLANATIONS: Record<string, {
+  what: string;
+  warning?: {
+    problem: string;
+    implications: string;
+    causes: string[];
+  };
+  error?: {
+    problem: string;
+    implications: string;
+    causes: string[];
+  };
+}> = {
+  cpu: {
+    what: "Le pourcentage de puissance de calcul utilisée par ton Mac.",
+    warning: {
+      problem: "Le CPU est sollicité à plus de 60%.",
+      implications: "Les applications peuvent ralentir, Claude Code peut mettre plus de temps à répondre.",
+      causes: [
+        "Un agent Claude fait des calculs intensifs",
+        "Un build/compilation en cours",
+        "Trop d'applications ouvertes",
+        "Spotlight indexe des fichiers"
+      ]
+    },
+    error: {
+      problem: "Le CPU est saturé (>80%).",
+      implications: "Tout va ramer. Les réponses de Claude seront très lentes.",
+      causes: [
+        "Plusieurs agents Claude tournent en parallèle",
+        "Une boucle infinie dans un script",
+        "Un process est bloqué ou planté"
+      ]
+    }
+  },
+  memory: {
+    what: "La RAM utilisée par toutes les applications.",
+    warning: {
+      problem: "Plus de 75% de la RAM est utilisée.",
+      implications: "macOS va commencer à utiliser le swap (disque), ce qui ralentit tout.",
+      causes: [
+        "Sessions Claude avec beaucoup de contexte",
+        "Navigateur avec beaucoup d'onglets",
+        "Applications gourmandes (Xcode, Docker)"
+      ]
+    },
+    error: {
+      problem: "Mémoire quasi-saturée (>90%).",
+      implications: "Le Mac va fortement ralentir. Des apps peuvent planter.",
+      causes: [
+        "Fuite mémoire dans une app",
+        "Trop de sessions Claude actives",
+        "Besoin de fermer des applications"
+      ]
+    }
+  },
+  swap: {
+    what: "Espace disque utilisé comme extension de la RAM (plus lent).",
+    warning: {
+      problem: "Le Mac utilise plus de 1GB de swap.",
+      implications: "Accès mémoire plus lents, possible ralentissement général.",
+      causes: ["RAM insuffisante pour la charge actuelle"]
+    },
+    error: {
+      problem: "Swap très élevé (>4GB).",
+      implications: "Performances dégradées. Le disque travaille beaucoup.",
+      causes: ["RAM saturée depuis un moment", "Besoin de redémarrer ou fermer des apps"]
+    }
+  },
+  "claude-api": {
+    what: "Le temps de réponse réel de l'API Claude (mesuré via OTEL).",
+    warning: {
+      problem: "Réponses de l'API >5 secondes.",
+      implications: "Claude prend du temps à répondre. Normal pour les gros prompts.",
+      causes: [
+        "Prompt avec beaucoup de contexte",
+        "Charge sur les serveurs Anthropic",
+        "Connexion réseau lente"
+      ]
+    },
+    error: {
+      problem: "Réponses >10 secondes.",
+      implications: "L'API est très lente. Tes interactions avec Claude seront frustrantes.",
+      causes: [
+        "Serveurs Anthropic surchargés",
+        "Contexte énorme dans la conversation",
+        "Problème réseau"
+      ]
+    }
+  },
+  "local-ratio": {
+    what: "Nombre de messages par rapport aux appels d'outils (actions).",
+    warning: {
+      problem: "Ratio >7 : Claude parle beaucoup mais agit peu.",
+      implications: "L'agent pourrait tourner en rond ou être bloqué.",
+      causes: [
+        "Claude demande des clarifications en boucle",
+        "Tâche mal définie",
+        "Blocage sur une permission"
+      ]
+    },
+    error: {
+      problem: "Ratio >10 : Très peu d'actions par rapport aux messages.",
+      implications: "Session probablement improductive. Claude ne fait rien de concret.",
+      causes: [
+        "Agent bloqué",
+        "Conversation qui tourne en rond",
+        "Besoin de reformuler la demande"
+      ]
+    }
+  },
+  "local-session": {
+    what: "Durée de la session Claude Code active.",
+    warning: {
+      problem: "Session active depuis plus de 4 heures.",
+      implications: "Le contexte s'accumule, les réponses peuvent devenir moins pertinentes.",
+      causes: ["Session longue sans interruption"]
+    },
+    error: {
+      problem: "Session de plus de 8 heures.",
+      implications: "Contexte très chargé. Risque de compaction ou d'oublis.",
+      causes: ["Tu devrais relancer une nouvelle session"]
+    }
+  },
+  "local-tasks": {
+    what: "Nombre de tâches en attente de dépendances.",
+    warning: {
+      problem: "Plus de 2 tâches bloquées.",
+      implications: "Du travail ne peut pas avancer.",
+      causes: ["Dépendances entre tâches non résolues"]
+    },
+    error: {
+      problem: "Plus de 5 tâches bloquées.",
+      implications: "Beaucoup de travail en attente. Priorisation nécessaire.",
+      causes: ["Chaîne de dépendances complexe", "Tâches abandonnées"]
+    }
+  }
+};
+
 type EventsPayload = {
   systemMetrics: SystemMetricsRecord[];
   processStats: ProcessStatsRecord[];
@@ -148,6 +289,18 @@ type TimelineEntry =
   | { kind: "latency"; ts: number; label: string; data: LatencyEventRecord }
   | { kind: "claude"; ts: number; label: string; data: ClaudeEventRecord }
   | { kind: "local"; ts: number; label: string; data: ClaudeLocalEventRecord };
+
+type SourceStatus = {
+  id: string;
+  name: string;
+  icon: "cpu" | "memory" | "disk" | "network" | "api" | "server" | "terminal";
+  status: "ok" | "warning" | "error" | "unknown";
+  value: string;
+  detail: string;
+  score: number;
+  refreshMs: number;
+  lastUpdate: number | null;
+};
 
 export default function App() {
   const [events, setEvents] = useState<EventsPayload>({
@@ -384,18 +537,6 @@ export default function App() {
 
   // Diagnostic: analyze all sources and identify probable cause
   const diagnostic = useMemo(() => {
-    type SourceStatus = {
-      id: string;
-      name: string;
-      icon: "cpu" | "memory" | "disk" | "network" | "api" | "server" | "terminal";
-      status: "ok" | "warning" | "error" | "unknown";
-      value: string;
-      detail: string;
-      score: number; // Higher = more likely to be the cause
-      refreshMs: number; // Refresh interval in ms
-      lastUpdate: number | null; // Timestamp of last update
-    };
-
     const sources: SourceStatus[] = [];
     const hasData = events.systemMetrics.length > 0;
     const hasLatencyData = events.latencyEvents.length > 0;
@@ -621,6 +762,75 @@ export default function App() {
     return { sources, summary, summaryStatus, topIssue };
   }, [latest, latestLatency, memPercent, watcherLeaderboard, events.systemMetrics.length, events.latencyEvents.length, events.claudeEvents.length, events.claudeLocalEvents, events.codexLocalEvents, claudeApiStats]);
 
+  // Get latest session and local stats for diagnostic
+  const latestSession = events.claudeLocalEvents
+    .filter((e) => e.event === "session_snapshot")
+    .at(-1);
+  const latestLocalStats = events.claudeLocalEvents
+    .filter((e) => e.event === "daily_stats")
+    .at(-1);
+
+  // Collect all patterns from recent events for diagnostic
+  const allPatterns = useMemo(() => {
+    const patternList: Array<{ name: string; severity: string }> = [];
+    for (const event of events.claudeLocalEvents.slice(-20)) {
+      if (event.patterns) {
+        for (const [pattern, severity] of Object.entries(event.patterns)) {
+          if (severity) {
+            patternList.push({ name: pattern, severity });
+          }
+        }
+      }
+    }
+    return patternList;
+  }, [events.claudeLocalEvents]);
+
+  // Diagnostic modal state
+  const [diagnosticModal, setDiagnosticModal] = useState<{
+    open: boolean;
+    loading: boolean;
+    result: string | null;
+    error: string | null;
+  }>({ open: false, loading: false, result: null, error: null });
+
+  const runDeepDiagnostic = async () => {
+    setDiagnosticModal({ open: true, loading: true, result: null, error: null });
+
+    const diagnosticData = {
+      cpu: latest?.cpuLoad ?? 0,
+      memory: memPercent,
+      memoryUsedGb: ((latest?.memUsedMb ?? 0) / 1024).toFixed(1),
+      memoryTotalGb: ((latest?.memTotalMb ?? 0) / 1024).toFixed(0),
+      swapGb: ((latest?.swapUsedMb ?? 0) / 1024).toFixed(1),
+      networkDown: formatBps(latest?.networkRxPerSec ?? 0),
+      networkUp: formatBps(latest?.networkTxPerSec ?? 0),
+      claudeApiLatencyMs: claudeApiStats?.latest ?? null,
+      claudeApiAvgMs: claudeApiStats?.avg ?? null,
+      sessionDuration: latestSession?.durationMinutes ?? 0,
+      messageCount: latestSession?.messageCount ?? 0,
+      messageToolRatio: latestLocalStats?.messageToolRatio ?? 0,
+      topProcesses: watcherLeaderboard.slice(0, 5),
+      patterns: allPatterns,
+    };
+
+    try {
+      const res = await fetch(apiUrl("/api/diagnostic"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ diagnosticData }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setDiagnosticModal(prev => ({ ...prev, loading: false, result: data.analysis }));
+      } else {
+        setDiagnosticModal(prev => ({ ...prev, loading: false, error: data.error }));
+      }
+    } catch (err) {
+      setDiagnosticModal(prev => ({ ...prev, loading: false, error: String(err) }));
+    }
+  };
+
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -730,90 +940,74 @@ endpoint = "http://localhost:4319"`}
                   </p>
                 </div>
               </div>
-              <Badge variant={
-                diagnostic.summaryStatus === "error" 
-                  ? "destructive" 
-                  : diagnostic.summaryStatus === "warning"
-                    ? "warning"
-                    : "success"
-              }>
-                {diagnostic.sources.filter(s => s.status === "error").length} erreurs · {diagnostic.sources.filter(s => s.status === "warning").length} alertes
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={runDeepDiagnostic}
+                  disabled={diagnosticModal.loading}
+                  className="gap-2"
+                >
+                  <Bot className="h-4 w-4" />
+                  {diagnosticModal.loading ? "Analyse..." : "Diagnostic Claude"}
+                </Button>
+                <Badge variant={
+                  diagnostic.summaryStatus === "error"
+                    ? "destructive"
+                    : diagnostic.summaryStatus === "warning"
+                      ? "warning"
+                      : "success"
+                }>
+                  {diagnostic.sources.filter(s => s.status === "error").length} erreurs · {diagnostic.sources.filter(s => s.status === "warning").length} alertes
+                </Badge>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {diagnostic.sources.map((source) => (
-                <div
-                  key={source.id}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg border p-3",
-                    source.status === "error"
-                      ? "border-red-500/30 bg-red-500/10"
-                      : source.status === "warning"
-                        ? "border-amber-500/30 bg-amber-500/10"
-                        : source.status === "ok"
-                          ? "border-green-500/30 bg-green-500/10"
-                          : "border-border bg-secondary/30"
-                  )}
-                >
-                  <div className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                    source.status === "error"
-                      ? "bg-red-500/20 text-red-400"
-                      : source.status === "warning"
-                        ? "bg-amber-500/20 text-amber-400"
-                        : source.status === "ok"
-                          ? "bg-green-500/20 text-green-400"
-                          : "bg-muted text-muted-foreground"
-                  )}>
-                    {source.icon === "cpu" && <Cpu className="h-4 w-4" />}
-                    {source.icon === "memory" && <MemoryStick className="h-4 w-4" />}
-                    {source.icon === "disk" && <HardDrive className="h-4 w-4" />}
-                    {source.icon === "network" && <Network className="h-4 w-4" />}
-                    {source.icon === "api" && <Globe className="h-4 w-4" />}
-                    {source.icon === "server" && <Server className="h-4 w-4" />}
-                    {source.icon === "terminal" && <Terminal className="h-4 w-4" />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-medium">{source.name}</p>
-                      <div className="flex items-center gap-1.5">
-                        <span className={cn(
-                          "shrink-0 text-sm font-bold",
-                          source.status === "error"
-                            ? "text-red-400"
-                            : source.status === "warning"
-                              ? "text-amber-400"
-                              : source.status === "ok"
-                                ? "text-green-400"
-                                : "text-muted-foreground"
-                        )}>
-                          {source.value}
-                        </span>
-                        <CountdownTimer
-                          refreshMs={source.refreshMs}
-                          lastUpdate={source.lastUpdate}
-                          size={14}
-                          className={cn(
-                            source.status === "error"
-                              ? "text-red-400"
-                              : source.status === "warning"
-                                ? "text-amber-400"
-                                : source.status === "ok"
-                                  ? "text-green-400"
-                                  : "text-muted-foreground"
-                          )}
-                        />
-                      </div>
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">{source.detail}</p>
-                  </div>
-                </div>
+                <DiagnosticSourceCard key={source.id} source={source} />
               ))}
             </div>
           </CardContent>
         </Card>
+
+        {/* Diagnostic Claude Modal */}
+        {diagnosticModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <Card className="w-full max-w-2xl max-h-[80vh] overflow-auto m-4">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2">
+                    <Bot className="h-5 w-5" />
+                    Diagnostic Claude
+                  </CardTitle>
+                  <Button variant="ghost" size="sm" onClick={() => setDiagnosticModal(prev => ({ ...prev, open: false }))}>
+                    <XCircle className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {diagnosticModal.loading && (
+                  <div className="flex items-center gap-3 text-muted-foreground">
+                    <div className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full" />
+                    Claude analyse ton système...
+                  </div>
+                )}
+                {diagnosticModal.result && (
+                  <div className="prose prose-invert prose-sm max-w-none">
+                    <pre className="whitespace-pre-wrap text-sm bg-secondary/50 p-4 rounded-lg">{diagnosticModal.result}</pre>
+                  </div>
+                )}
+                {diagnosticModal.error && (
+                  <div className="text-red-400">
+                    Erreur: {diagnosticModal.error}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         {/* Pattern Analysis Panel (shown only when patterns detected) */}
         <PatternAnalysisPanel
@@ -1289,6 +1483,132 @@ function formatBps(bytesPerSec: number) {
   if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+/**
+ * Diagnostic source card with tooltip explanations
+ */
+function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const explanation = METRIC_EXPLANATIONS[source.id];
+
+  const statusContent = source.status === "error"
+    ? explanation?.error
+    : source.status === "warning"
+      ? explanation?.warning
+      : null;
+
+  return (
+    <div
+      className="relative group"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      <div
+        className={cn(
+          "flex items-center gap-3 rounded-lg border p-3 cursor-help",
+          source.status === "error"
+            ? "border-red-500/30 bg-red-500/10"
+            : source.status === "warning"
+              ? "border-amber-500/30 bg-amber-500/10"
+              : source.status === "ok"
+                ? "border-green-500/30 bg-green-500/10"
+                : "border-border bg-secondary/30"
+        )}
+      >
+        <div className={cn(
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+          source.status === "error"
+            ? "bg-red-500/20 text-red-400"
+            : source.status === "warning"
+              ? "bg-amber-500/20 text-amber-400"
+              : source.status === "ok"
+                ? "bg-green-500/20 text-green-400"
+                : "bg-muted text-muted-foreground"
+        )}>
+          {source.icon === "cpu" && <Cpu className="h-4 w-4" />}
+          {source.icon === "memory" && <MemoryStick className="h-4 w-4" />}
+          {source.icon === "disk" && <HardDrive className="h-4 w-4" />}
+          {source.icon === "network" && <Network className="h-4 w-4" />}
+          {source.icon === "api" && <Globe className="h-4 w-4" />}
+          {source.icon === "server" && <Server className="h-4 w-4" />}
+          {source.icon === "terminal" && <Terminal className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="truncate text-sm font-medium">{source.name}</p>
+            <div className="flex items-center gap-1.5">
+              <span className={cn(
+                "shrink-0 text-sm font-bold",
+                source.status === "error"
+                  ? "text-red-400"
+                  : source.status === "warning"
+                    ? "text-amber-400"
+                    : source.status === "ok"
+                      ? "text-green-400"
+                      : "text-muted-foreground"
+              )}>
+                {source.value}
+              </span>
+              <CountdownTimer
+                refreshMs={source.refreshMs}
+                lastUpdate={source.lastUpdate}
+                size={14}
+                className={cn(
+                  source.status === "error"
+                    ? "text-red-400"
+                    : source.status === "warning"
+                      ? "text-amber-400"
+                      : source.status === "ok"
+                        ? "text-green-400"
+                        : "text-muted-foreground"
+                )}
+              />
+            </div>
+          </div>
+          <p className="truncate text-xs text-muted-foreground">{source.detail}</p>
+        </div>
+      </div>
+
+      {/* Tooltip */}
+      {showTooltip && explanation && (
+        <div className="absolute left-0 top-full mt-2 z-50 w-80 rounded-lg border bg-popover p-4 shadow-lg text-popover-foreground">
+          <p className="font-medium mb-2 flex items-center gap-2">
+            <Info className="h-4 w-4 text-primary" />
+            {explanation.what}
+          </p>
+
+          {statusContent && (
+            <div className="border-t border-border pt-3 mt-3 space-y-2">
+              <p className={cn(
+                "text-sm font-medium",
+                source.status === "error" ? "text-red-400" : "text-amber-400"
+              )}>
+                {source.status === "error" ? "🔴" : "🟡"} {statusContent.problem}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {statusContent.implications}
+              </p>
+              <div className="text-xs text-muted-foreground">
+                <span className="font-medium">Causes possibles :</span>
+                <ul className="list-disc list-inside mt-1 space-y-0.5">
+                  {statusContent.causes.map((cause, i) => (
+                    <li key={i}>{cause}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {!statusContent && (
+            <p className="text-xs text-green-400 mt-2">
+              Tout va bien de ce côté.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Pattern suggestions mapping

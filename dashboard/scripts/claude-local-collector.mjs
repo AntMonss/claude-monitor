@@ -39,12 +39,56 @@ const THRESHOLDS = {
 };
 
 /**
+ * Read last N lines from a file efficiently (tail-like)
+ * Reads from end of file to minimize memory usage on large files
+ */
+async function readLastLines(filePath, maxLines = 1000) {
+  try {
+    const stat = await fs.stat(filePath);
+    const fileSize = stat.size;
+
+    // For small files, just read the whole thing
+    if (fileSize < 100 * 1024) { // < 100KB
+      const raw = await fs.readFile(filePath, "utf8");
+      const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+      return lines.slice(-maxLines);
+    }
+
+    // For larger files, read chunks from the end
+    const handle = await fs.open(filePath, "r");
+    try {
+      const chunkSize = Math.min(fileSize, 512 * 1024); // Read up to 512KB from end
+      const buffer = Buffer.alloc(chunkSize);
+      const startPos = Math.max(0, fileSize - chunkSize);
+
+      await handle.read(buffer, 0, chunkSize, startPos);
+      const content = buffer.toString("utf8");
+      const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+      // If we started mid-file, first line might be incomplete - skip it
+      if (startPos > 0 && lines.length > 0) {
+        lines.shift();
+      }
+
+      return lines.slice(-maxLines);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error("[claude-local] Error reading file tail:", error.message);
+    }
+    return [];
+  }
+}
+
+/**
  * Read and parse history.jsonl to get active sessions
+ * Only reads last 1000 lines for performance
  */
 async function readHistory() {
   try {
-    const raw = await fs.readFile(CLAUDE_PATHS.history, "utf8");
-    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const lines = await readLastLines(CLAUDE_PATHS.history, 1000);
 
     // Group by sessionId to get session info
     const sessions = new Map();

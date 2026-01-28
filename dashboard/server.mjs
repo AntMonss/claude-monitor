@@ -95,6 +95,99 @@ app.get("/api/mode", async (req, res) => {
   res.json({ mode: otelUp ? "active" : "passive", otelUp });
 });
 
+// Diagnostic endpoint - calls Claude CLI for deep analysis
+app.post("/api/diagnostic", async (req, res) => {
+  const { diagnosticData } = req.body;
+
+  if (!diagnosticData) {
+    return res.status(400).json({ success: false, error: "Missing diagnosticData" });
+  }
+
+  const prompt = buildDiagnosticPrompt(diagnosticData);
+
+  try {
+    const result = await runClaudeAnalysis(prompt);
+    res.json({ success: true, analysis: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+function buildDiagnosticPrompt(data) {
+  return `Tu es un expert en diagnostic système. Analyse ces données et explique simplement ce qui pourrait causer des lenteurs ou problèmes. Sois concis et actionnable.
+
+## Données système
+
+CPU: ${data.cpu?.toFixed?.(1) ?? data.cpu}%
+RAM: ${data.memory?.toFixed?.(0) ?? data.memory}% (${data.memoryUsedGb}GB / ${data.memoryTotalGb}GB)
+Swap: ${data.swapGb}GB
+Réseau: ↓ ${data.networkDown || "N/A"} · ↑ ${data.networkUp || "N/A"}
+
+## API Claude (latence réelle via OTEL)
+- Dernière requête: ${data.claudeApiLatencyMs ? `${Math.round(data.claudeApiLatencyMs)}ms` : "Pas de données OTEL"}
+- Moyenne: ${data.claudeApiAvgMs ? `${Math.round(data.claudeApiAvgMs)}ms` : "N/A"}
+
+## Session Claude Code
+- Durée: ${data.sessionDuration} minutes
+- Messages: ${data.messageCount}
+- Ratio Message/Tool: ${data.messageToolRatio}
+
+## Processus les plus gourmands
+${data.topProcesses?.map(p => \`- \${p.name}: \${p.avgCpu?.toFixed(1) ?? p.cpu}% CPU, \${p.mem?.toFixed(0) ?? "—"}MB RAM\`).join("\\n") || "Aucun"}
+
+## Patterns détectés
+${data.patterns?.length > 0 ? data.patterns.map(p => \`- \${p.name}: \${p.severity}\`).join("\\n") : "Aucun"}
+
+## Ta mission
+1. Identifie LA cause la plus probable du problème (s'il y en a un)
+2. Explique simplement pourquoi
+3. Donne UNE action concrète à faire
+
+Réponds en français, de façon simple et directe.`;
+}
+
+async function runClaudeAnalysis(prompt) {
+  return new Promise((resolve, reject) => {
+    const args = ["-p", "--output-format", "json", "--", prompt];
+
+    const claude = spawn("claude", args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      cwd: process.cwd(),
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    claude.stdout.on("data", (data) => { stdout += data.toString(); });
+    claude.stderr.on("data", (data) => { stderr += data.toString(); });
+
+    // Timeout after 60 seconds
+    const timeout = setTimeout(() => {
+      claude.kill();
+      reject(new Error("Timeout: Claude n'a pas répondu en 60s"));
+    }, 60000);
+
+    claude.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout);
+          resolve(result.result || stdout);
+        } catch {
+          resolve(stdout);
+        }
+      } else {
+        reject(new Error(`Claude exited with code ${code}: ${stderr}`));
+      }
+    });
+
+    claude.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(new Error(`Failed to start Claude CLI: ${err.message}. Is claude installed?`));
+    });
+  });
+}
+
 // Periodic rotation of JSONL files (every 5 minutes)
 setInterval(async () => {
   const files = [FILE_NAMES.system, FILE_NAMES.process, FILE_NAMES.codex, FILE_NAMES.codexLocal, FILE_NAMES.latency, FILE_NAMES.claude, FILE_NAMES.claudeLocal];

@@ -77,18 +77,59 @@ swift build && .build/debug/ClaudeMonitor
 Toutes les fonctionnalités avancées sont dans le dashboard :
 
 - **Diagnostics** : CPU, RAM, Swap, Réseau avec analyse de cause probable
-- **Tooltips** : Hover sur les métriques = explication + suggestions
+- **Tooltips explicatifs** : Hover sur les cartes = explication + causes possibles
+- **Diagnostic Claude** : Bouton pour analyse approfondie via Claude CLI
 - **Sessions Claude Code** : Lecture des JSONL de `~/.claude/projects/`
 - **Process stats** : CPU/RAM par process (collector)
 - **Timeline** : Événements unifiés
+
+### Tooltips Explicatifs
+
+Chaque carte de diagnostic affiche un tooltip au hover avec :
+- **C'est quoi ?** : Explication simple de la métrique
+- **Pourquoi c'est jaune/rouge ?** : Le problème concret
+- **Conséquences** : Ce que ça implique
+- **Causes possibles** : D'où ça peut venir
+
+Métriques documentées : `cpu`, `memory`, `swap`, `claude-api`, `local-ratio`, `local-session`, `local-tasks`
+
+### Diagnostic Claude (bouton)
+
+Le bouton "Diagnostic Claude" dans le panneau de diagnostic :
+1. Collecte toutes les données actuelles (CPU, RAM, Swap, Réseau, Latence API, Session, Patterns)
+2. Appelle Claude CLI en mode non-interactif (`claude -p --output-format json`)
+3. Affiche l'analyse dans une modal
+
+**Données envoyées à Claude** :
+- Système : CPU%, RAM%, Swap, Réseau (↓/↑)
+- API Claude : Latence dernière requête + moyenne (via OTEL)
+- Session : Durée, messages, ratio message/tool
+- Top 5 processus gourmands
+- Patterns détectés
+
+**Timeout** : 60 secondes
 
 ### Sessions Claude Code
 
 Le dashboard lit directement les fichiers JSONL de `~/.claude/projects/`.
 
 - **Zero config** : Pas besoin d'OTEL, les données sont déjà là
-- **Zero overhead** : Lecture à la demande
+- **Zero overhead** : Lecture à la demande (dernières 1000 lignes max)
 - **Historique** : Sessions des dernières 24h
+
+### Intervalles de collecte
+
+| Collector | Intervalle | Justification |
+|-----------|------------|---------------|
+| `collector.mjs` (système) | 10s | Évite surcharge CPU |
+| `claude-local-collector.mjs` | 30s | Lecture fichiers légère |
+| `latency-monitor.mjs` | 10s | Réseau externe uniquement |
+| Frontend polling | 5s | UI réactive |
+
+### Rotation des fichiers
+
+Tous les fichiers JSONL sont limités à **500 lignes max** (rotation toutes les 5 min).
+Taille totale max : ~700 KB.
 
 ## Prérequis
 

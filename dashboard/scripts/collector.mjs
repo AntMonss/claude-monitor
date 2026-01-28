@@ -12,7 +12,7 @@ import {
 
 const SYSTEM_LOG = path.join(DATA_DIR, FILE_NAMES.system);
 const PROCESS_LOG = path.join(DATA_DIR, FILE_NAMES.process);
-const SAMPLE_INTERVAL_MS = Number(process.env.AI_DASHBOARD_INTERVAL_MS ?? 2000);
+const SAMPLE_INTERVAL_MS = Number(process.env.AI_DASHBOARD_INTERVAL_MS ?? 10000);
 const WATCHER_KEYWORDS = [
   "node",
   "vite",
