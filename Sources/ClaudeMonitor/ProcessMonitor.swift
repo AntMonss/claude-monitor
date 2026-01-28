@@ -111,19 +111,20 @@ struct MonitorSnapshot {
     }
 
     /// Status indicator: 🟢 = all good, 🟡 = minor, 🟠 = attention, 🔴 = problem
+    /// Based on system resources only (RAM, CPU), not agent count
     var statusIndicator: String {
-        // Red: orphans detected
+        // Red: orphans detected (cleanup needed)
         if hasOrphans {
             return "🔴"
         }
 
-        // Orange: high memory (>85%) or many agents (>6)
-        if system.memoryUsedPercent > 85 || totalAllAgents > 6 {
+        // Orange: high memory (>85%) or high CPU (>80%)
+        if system.memoryUsedPercent > 85 || system.cpuUserPercent > 80 {
             return "🟠"
         }
 
-        // Yellow: moderate memory (>75%) or several agents (>3)
-        if system.memoryUsedPercent > 75 || totalAllAgents > 3 {
+        // Yellow: moderate memory (>75%) or moderate CPU (>60%)
+        if system.memoryUsedPercent > 75 || system.cpuUserPercent > 60 {
             return "🟡"
         }
 
@@ -183,31 +184,62 @@ class ProcessMonitor: ObservableObject {
 
     private func detectClaudeInteractive() -> [AgentInfo] {
         // Claude interactive = has TTY (not "??"), running claude with --dangerously or from .local/bin/claude
-        let output = shell("ps -eo pid,tty,etime,command | grep -E 'claude.*--dangerously|\\.local/bin/claude' | grep -v grep | grep -v ' \\?\\? '")
+        // Exclude dashboard scripts and helper processes
+        let output = shell("""
+            ps -eo pid,tty,etime,command | \
+            grep -E 'claude.*--dangerously|\\.local/bin/claude|\\.local/share/claude/local' | \
+            grep -v grep | grep -v ' \\?\\? ' | \
+            grep -v 'claude-local' | grep -v 'claude-monitor' | grep -v 'Claude Grid'
+        """)
         return parseAgents(output, type: .claudeInteractive)
     }
 
     private func detectClaudeSubagents() -> [AgentInfo] {
         // Claude subagents = background (TTY=??), with --max-turns (spawned by Task tool)
-        let output = shell("ps -eo pid,tty,etime,command | grep -E 'claude.*--dangerously|\\.local/bin/claude|\\.local/share/claude/versions' | grep -v grep | grep ' \\?\\? ' | grep -v 'chrome-native-host' | grep 'max-turns'")
+        // The Task tool launches subagents with --max-turns flag
+        let output = shell("""
+            ps -eo pid,tty,etime,command | \
+            grep -E 'claude.*--dangerously|\\.local/bin/claude|\\.local/share/claude' | \
+            grep -v grep | grep ' \\?\\? ' | \
+            grep -v 'chrome-native-host' | grep -v 'claude-local' | grep -v 'claude-monitor' | \
+            grep 'max-turns'
+        """)
         return parseAgents(output, type: .claudeSubagent)
     }
 
     private func detectClaudeWorkers() -> [AgentInfo] {
-        // Claude background workers = background (TTY=??), no --max-turns (Ralph workers etc)
-        let output = shell("ps -eo pid,tty,etime,command | grep -E 'claude.*--dangerously|\\.local/bin/claude|\\.local/share/claude/versions' | grep -v grep | grep ' \\?\\? ' | grep -v 'chrome-native-host' | grep -v 'max-turns'")
+        // Claude background workers = background (TTY=??), no --max-turns (Ralph workers, batch jobs)
+        let output = shell("""
+            ps -eo pid,tty,etime,command | \
+            grep -E 'claude.*--dangerously|\\.local/bin/claude|\\.local/share/claude' | \
+            grep -v grep | grep ' \\?\\? ' | \
+            grep -v 'chrome-native-host' | grep -v 'claude-local' | grep -v 'claude-monitor' | grep -v 'Claude Grid' | \
+            grep -v 'max-turns'
+        """)
         return parseAgents(output, type: .claudeWorker)
     }
 
     private func detectCodexSessions() -> [AgentInfo] {
-        // Codex sessions with TTY (interactive)
-        let output = shell("ps -eo pid,tty,etime,command | grep -E 'codex' | grep -v grep | grep -v 'node_modules' | grep -v ' \\?\\? '")
+        // Codex interactive sessions = has TTY (not "??"), running the codex binary
+        // Exclude dashboard scripts and node_modules
+        let output = shell("""
+            ps -eo pid,tty,etime,command | \
+            grep -E '/codex |codex --' | \
+            grep -v grep | grep -v 'node_modules' | grep -v 'codex-local' | grep -v 'codex-log' | \
+            grep -v ' \\?\\? '
+        """)
         return parseAgents(output, type: .codex)
     }
 
     private func detectCodexSubagents() -> [AgentInfo] {
-        // Codex subagents (background, TTY=??)
-        let output = shell("ps -eo pid,tty,etime,command | grep -E 'codex' | grep -v grep | grep -v 'node_modules' | grep ' \\?\\? '")
+        // Codex subagents = background (TTY=??), running codex binary with --exec or subagent flags
+        // Exclude dashboard scripts
+        let output = shell("""
+            ps -eo pid,tty,etime,command | \
+            grep -E '/codex |codex --' | \
+            grep -v grep | grep -v 'node_modules' | grep -v 'codex-local' | grep -v 'codex-log' | \
+            grep ' \\?\\? '
+        """)
         return parseAgents(output, type: .codexSubagent)
     }
 
