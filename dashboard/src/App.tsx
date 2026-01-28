@@ -1019,11 +1019,17 @@ endpoint = "http://localhost:4319"`}
           </div>
         )}
 
+        {/* Metrics History Chart - First for visibility */}
+        <MetricsHistoryChart systemMetrics={events.systemMetrics} latencyEvents={events.latencyEvents} />
+
         {/* Pattern Analysis Panel (shown only when patterns detected) */}
         <PatternAnalysisPanel
           claudeLocalEvents={events.claudeLocalEvents}
           codexLocalEvents={events.codexLocalEvents}
         />
+
+        {/* Tasks Panel (shown when there are pending/blocked tasks) */}
+        <TasksPanel claudeLocalEvents={events.claudeLocalEvents} />
 
         {/* Metrics Cards */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
@@ -1065,9 +1071,6 @@ endpoint = "http://localhost:4319"`}
             }
           />
         </div>
-
-        {/* Metrics History Chart */}
-        <MetricsHistoryChart systemMetrics={events.systemMetrics} latencyEvents={events.latencyEvents} />
 
         {/* Timeline */}
         <Card>
@@ -1500,9 +1503,11 @@ function formatBps(bytesPerSec: number) {
 
 /**
  * Diagnostic source card with tooltip explanations
+ * Click to lock tooltip open for text selection/copy
  */
 function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
   const [showTooltip, setShowTooltip] = useState(false);
+  const [locked, setLocked] = useState(false);
   const explanation = METRIC_EXPLANATIONS[source.id];
 
   const statusContent = source.status === "error"
@@ -1511,22 +1516,37 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
       ? explanation?.warning
       : null;
 
+  const handleClick = () => {
+    setLocked(!locked);
+    setShowTooltip(!locked);
+  };
+
+  const handleMouseEnter = () => {
+    if (!locked) setShowTooltip(true);
+  };
+
+  const handleMouseLeave = () => {
+    if (!locked) setShowTooltip(false);
+  };
+
   return (
     <div
       className="relative group"
-      onMouseEnter={() => setShowTooltip(true)}
-      onMouseLeave={() => setShowTooltip(false)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       <div
+        onClick={handleClick}
         className={cn(
-          "flex items-center gap-3 rounded-lg border p-3 cursor-help",
+          "flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-all",
           source.status === "error"
             ? "border-red-500/30 bg-red-500/10"
             : source.status === "warning"
               ? "border-amber-500/30 bg-amber-500/10"
               : source.status === "ok"
                 ? "border-green-500/30 bg-green-500/10"
-                : "border-border bg-secondary/30"
+                : "border-border bg-secondary/30",
+          locked && "ring-2 ring-primary/50"
         )}
       >
         <div className={cn(
@@ -1583,13 +1603,29 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
         </div>
       </div>
 
-      {/* Tooltip */}
+      {/* Tooltip - Click to lock, click again or X to close */}
       {showTooltip && explanation && (
-        <div className="absolute left-0 top-full mt-2 z-50 w-80 rounded-lg border bg-popover p-4 shadow-lg text-popover-foreground">
-          <p className="font-medium mb-2 flex items-center gap-2">
-            <Info className="h-4 w-4 text-primary" />
-            {explanation.what}
-          </p>
+        <div
+          className={cn(
+            "absolute left-0 top-full mt-2 z-50 w-80 rounded-lg border bg-popover p-4 shadow-lg text-popover-foreground select-text",
+            locked && "ring-2 ring-primary"
+          )}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-2 mb-2">
+            <p className="font-medium flex items-center gap-2">
+              <Info className="h-4 w-4 text-primary" />
+              {explanation.what}
+            </p>
+            {locked && (
+              <button
+                onClick={() => { setLocked(false); setShowTooltip(false); }}
+                className="text-muted-foreground hover:text-foreground p-0.5"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            )}
+          </div>
 
           {statusContent && (
             <div className="border-t border-border pt-3 mt-3 space-y-2">
@@ -1616,6 +1652,12 @@ function DiagnosticSourceCard({ source }: { source: SourceStatus }) {
           {!statusContent && (
             <p className="text-xs text-green-400 mt-2">
               Tout va bien de ce côté.
+            </p>
+          )}
+
+          {locked && (
+            <p className="text-[10px] text-muted-foreground mt-3 border-t border-border pt-2">
+              Cliquez sur la carte ou × pour fermer. Texte sélectionnable.
             </p>
           )}
         </div>
@@ -1838,21 +1880,32 @@ function PatternAnalysisPanel({
 }) {
   // Collect all patterns from recent events (both Claude and Codex)
   const allPatterns = useMemo(() => {
-    const patternMap = new Map<string, { severity: string; count: number; agent: string }>();
+    const patternMap = new Map<string, {
+      severity: string;
+      count: number;
+      agent: string;
+      details?: { sessionId?: string; project?: string; durationMinutes?: number };
+    }>();
 
     // Claude patterns
     for (const event of claudeLocalEvents.slice(-20)) {
       if (event.patterns) {
-        for (const [pattern, severity] of Object.entries(event.patterns)) {
-          if (severity) {
+        for (const [pattern, value] of Object.entries(event.patterns)) {
+          if (value) {
+            // Handle both old format (string) and new format (object)
+            const severity = typeof value === "object" ? value.severity : value;
+            const details = typeof value === "object" ? value : undefined;
+
             const existing = patternMap.get(pattern);
             if (existing) {
               existing.count++;
               if (severity === "error" && existing.severity === "warning") {
                 existing.severity = "error";
               }
+              // Keep most recent details
+              if (details) existing.details = details;
             } else {
-              patternMap.set(pattern, { severity, count: 1, agent: "Claude" });
+              patternMap.set(pattern, { severity, count: 1, agent: "Claude", details });
             }
           }
         }
@@ -1862,8 +1915,10 @@ function PatternAnalysisPanel({
     // Codex patterns
     for (const event of codexLocalEvents.slice(-20)) {
       if (event.patterns) {
-        for (const [pattern, severity] of Object.entries(event.patterns)) {
-          if (severity) {
+        for (const [pattern, value] of Object.entries(event.patterns)) {
+          if (value) {
+            const severity = typeof value === "object" ? value.severity : value;
+            const details = typeof value === "object" ? value : undefined;
             const key = `codex_${pattern}`;
             const existing = patternMap.get(key);
             if (existing) {
@@ -1871,8 +1926,9 @@ function PatternAnalysisPanel({
               if (severity === "error" && existing.severity === "warning") {
                 existing.severity = "error";
               }
+              if (details) existing.details = details;
             } else {
-              patternMap.set(key, { severity, count: 1, agent: "Codex" });
+              patternMap.set(key, { severity, count: 1, agent: "Codex", details });
             }
           }
         }
@@ -1881,7 +1937,10 @@ function PatternAnalysisPanel({
 
     return Array.from(patternMap.entries()).map(([pattern, data]) => ({
       pattern: pattern.replace("codex_", ""),
-      ...data,
+      severity: data.severity,
+      count: data.count,
+      agent: data.agent,
+      details: data.details,
       ...PATTERN_SUGGESTIONS[pattern.replace("codex_", "")],
     }));
   }, [claudeLocalEvents, codexLocalEvents]);
@@ -1901,7 +1960,7 @@ function PatternAnalysisPanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {allPatterns.map(({ pattern, severity, count, title, suggestion, agent }) => (
+        {allPatterns.map(({ pattern, severity, count, title, suggestion, agent, details }) => (
           <div
             key={pattern}
             className={cn(
@@ -1923,9 +1982,16 @@ function PatternAnalysisPanel({
                   <Badge variant="outline" className="text-[10px] px-1 py-0">
                     {agent}
                   </Badge>
+                  {details?.project && (
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 font-mono">
+                      {details.project}
+                    </Badge>
+                  )}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {suggestion || "Pattern détecté dans les données locales."}
+                  {details?.durationMinutes
+                    ? `Session ${details.sessionId || "?"} active depuis ${Math.floor(details.durationMinutes / 60)}h${details.durationMinutes % 60}min. ${suggestion || ""}`
+                    : suggestion || "Pattern détecté dans les données locales."}
                 </p>
               </div>
               <Badge variant={severity === "error" ? "destructive" : "warning"}>
@@ -1934,6 +2000,87 @@ function PatternAnalysisPanel({
             </div>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Tasks Panel - Shows pending and blocked tasks
+ */
+function TasksPanel({
+  claudeLocalEvents,
+}: {
+  claudeLocalEvents: ClaudeLocalEventRecord[];
+}) {
+  // Get latest task status event
+  const latestTaskEvent = useMemo(() => {
+    return claudeLocalEvents
+      .filter((e) => e.event === "task_status")
+      .at(-1);
+  }, [claudeLocalEvents]);
+
+  if (!latestTaskEvent || (!latestTaskEvent.pendingCount && !latestTaskEvent.blockedCount)) {
+    return null;
+  }
+
+  const tasks = latestTaskEvent.tasks || [];
+  const blockedCount = latestTaskEvent.blockedCount || 0;
+  const pendingCount = latestTaskEvent.pendingCount || 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base font-medium flex items-center gap-2">
+            <Terminal className="h-4 w-4" />
+            Tâches Claude Code
+          </CardTitle>
+          <div className="flex gap-2">
+            {pendingCount > 0 && (
+              <Badge variant="outline">{pendingCount} en attente</Badge>
+            )}
+            {blockedCount > 0 && (
+              <Badge variant="warning">{blockedCount} bloquées</Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {tasks.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Aucune tâche visible (limite: 5 premières)
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {tasks.map((task) => (
+              <div
+                key={task.id}
+                className={cn(
+                  "flex items-center justify-between rounded-lg border px-3 py-2",
+                  task.status === "in_progress"
+                    ? "border-blue-500/30 bg-blue-500/10"
+                    : "border-border bg-secondary/30"
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">
+                    {task.subject || task.id}
+                  </p>
+                  <p className="text-xs text-muted-foreground font-mono">
+                    {task.id}
+                  </p>
+                </div>
+                <Badge
+                  variant={task.status === "in_progress" ? "default" : "secondary"}
+                  className="ml-2 shrink-0"
+                >
+                  {task.status === "in_progress" ? "En cours" : task.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -198,10 +198,15 @@ async function readTasks() {
 
 /**
  * Detect patterns from collected data
+ * Only considers sessions active in the last 2 hours
  */
 function detectPatterns(sessions, statsCache, tasks) {
   const patterns = {};
   const now = Date.now();
+  const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+
+  // Filter to only recently active sessions (last activity within 2 hours)
+  const activeSessions = sessions.filter((s) => s.lastTs > twoHoursAgo);
 
   // Calculate message/tool ratio from today's stats
   if (statsCache?.dailyActivity?.length > 0) {
@@ -216,16 +221,29 @@ function detectPatterns(sessions, statsCache, tasks) {
     }
   }
 
-  // Check for long-running sessions
-  for (const session of sessions) {
+  // Check for long-running sessions (only recently active ones)
+  for (const session of activeSessions) {
     const durationMs = session.lastTs - session.firstTs;
     const durationMinutes = durationMs / 60000;
 
     if (durationMinutes > THRESHOLDS.sessionDurationMinutes.error) {
-      patterns.longRunningSession = "error";
+      // Store session info for display
+      const projectName = session.project?.split("/").pop() || "unknown";
+      patterns.longRunningSession = {
+        severity: "error",
+        sessionId: session.sessionId?.slice(0, 8),
+        project: projectName,
+        durationMinutes: Math.round(durationMinutes),
+      };
       break;
     } else if (durationMinutes > THRESHOLDS.sessionDurationMinutes.warning) {
-      patterns.longRunningSession = "warning";
+      const projectName = session.project?.split("/").pop() || "unknown";
+      patterns.longRunningSession = {
+        severity: "warning",
+        sessionId: session.sessionId?.slice(0, 8),
+        project: projectName,
+        durationMinutes: Math.round(durationMinutes),
+      };
     }
   }
 
