@@ -23,11 +23,13 @@ Le menubar reste minimal. Toute l'intelligence est dans le dashboard.
 
 ## Menubar (ce projet)
 
-Indicateur de status dans la menubar (rond de couleur) :
+Indicateur de status dans la menubar (rond de couleur) - basé sur RAM/CPU uniquement :
 - 🟢 Tout va bien
-- 🟡 Attention modérée (mémoire >75%, >3 agents)
-- 🟠 Attention (mémoire >85%, >6 agents)
+- 🟡 Attention modérée (RAM >75% ou CPU >60%)
+- 🟠 Attention (RAM >85% ou CPU >80%)
 - 🔴 Problème (orphelins détectés)
+
+Note: Le nombre d'agents n'est pas un indicateur de problème en soi.
 
 ### Fonctionnalités
 
