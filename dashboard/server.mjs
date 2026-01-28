@@ -114,6 +114,24 @@ app.post("/api/diagnostic", async (req, res) => {
 });
 
 function buildDiagnosticPrompt(data) {
+  const processLines = data.topProcesses?.map(p => {
+    const cpu = p.avgCpu?.toFixed(1) ?? p.cpu ?? "?";
+    const mem = p.mem?.toFixed(0) ?? "—";
+    return "- " + p.name + ": " + cpu + "% CPU, " + mem + "MB RAM";
+  }).join("\n") || "Aucun";
+
+  const patternLines = data.patterns?.length > 0
+    ? data.patterns.map(p => "- " + p.name + ": " + p.severity).join("\n")
+    : "Aucun";
+
+  const claudeLatency = data.claudeApiLatencyMs
+    ? Math.round(data.claudeApiLatencyMs) + "ms"
+    : "Pas de données OTEL";
+
+  const claudeAvg = data.claudeApiAvgMs
+    ? Math.round(data.claudeApiAvgMs) + "ms"
+    : "N/A";
+
   return `Tu es un expert en diagnostic système. Analyse ces données et explique simplement ce qui pourrait causer des lenteurs ou problèmes. Sois concis et actionnable.
 
 ## Données système
@@ -124,8 +142,8 @@ Swap: ${data.swapGb}GB
 Réseau: ↓ ${data.networkDown || "N/A"} · ↑ ${data.networkUp || "N/A"}
 
 ## API Claude (latence réelle via OTEL)
-- Dernière requête: ${data.claudeApiLatencyMs ? `${Math.round(data.claudeApiLatencyMs)}ms` : "Pas de données OTEL"}
-- Moyenne: ${data.claudeApiAvgMs ? `${Math.round(data.claudeApiAvgMs)}ms` : "N/A"}
+- Dernière requête: ${claudeLatency}
+- Moyenne: ${claudeAvg}
 
 ## Session Claude Code
 - Durée: ${data.sessionDuration} minutes
@@ -133,10 +151,10 @@ Réseau: ↓ ${data.networkDown || "N/A"} · ↑ ${data.networkUp || "N/A"}
 - Ratio Message/Tool: ${data.messageToolRatio}
 
 ## Processus les plus gourmands
-${data.topProcesses?.map(p => \`- \${p.name}: \${p.avgCpu?.toFixed(1) ?? p.cpu}% CPU, \${p.mem?.toFixed(0) ?? "—"}MB RAM\`).join("\\n") || "Aucun"}
+${processLines}
 
 ## Patterns détectés
-${data.patterns?.length > 0 ? data.patterns.map(p => \`- \${p.name}: \${p.severity}\`).join("\\n") : "Aucun"}
+${patternLines}
 
 ## Ta mission
 1. Identifie LA cause la plus probable du problème (s'il y en a un)
