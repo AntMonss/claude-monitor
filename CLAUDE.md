@@ -1,8 +1,27 @@
 # Claude Monitor - System & Agent Monitoring
 
-Application macOS menubar pour monitorer les agents IA, serveurs et ressources système.
+## PRINCIPE FONDAMENTAL
 
-## Icône
+**Le monitor ne doit JAMAIS faire partie du problème.**
+
+Toute modification doit respecter ces contraintes absolues :
+- **Zero impact CPU** : Pas de polling agressif, pas de boucles coûteuses, pas de calculs lourds
+- **Mémoire minimale** : Pas de stockage de données historiques volumineuses, pas de caches qui grossissent
+- **I/O légères** : Commandes shell espacées (30s min), pas de lecture de fichiers en continu
+- **Réactivité** : L'app doit rester fluide même quand le système est sous charge
+
+Si une feature risque d'alourdir le système, elle ne doit pas être implémentée ou doit être opt-in avec avertissement.
+
+---
+
+## Architecture
+
+**Menubar (Swift)** = Indicateur léger + actions rapides
+**Dashboard (React)** = Diagnostics, tooltips, graphiques, sessions
+
+Le menubar reste minimal. Toute l'intelligence est dans le dashboard.
+
+## Menubar (ce projet)
 
 Indicateur de status dans la menubar (rond de couleur) :
 - 🟢 Tout va bien
@@ -10,7 +29,7 @@ Indicateur de status dans la menubar (rond de couleur) :
 - 🟠 Attention (mémoire >85%, >6 agents)
 - 🔴 Problème (orphelins détectés)
 
-## Fonctionnalités
+### Fonctionnalités
 
 - **Agents** : Claude interactifs, subagents, workers, Codex
 - **Serveurs** : Ports 3000, 3001, 3002, 3120 avec bouton Stop
@@ -19,16 +38,21 @@ Indicateur de status dans la menubar (rond de couleur) :
 - **Système** : RAM%, CPU%
 - **Dashboard** : Lancement automatique en background + ouverture navigateur
 
-## Structure
+### Structure
 
 ```
 Sources/ClaudeMonitor/
 ├── ClaudeMonitorApp.swift   # Point d'entrée, menubar
 ├── MonitorView.swift        # UI monitoring (sections)
 └── ProcessMonitor.swift     # Détection processus + actions
+
+dashboard/                   # Web UI (React/Vite)
+├── src/                     # Frontend React
+├── server.mjs               # Backend API
+└── scripts/                 # Collectors
 ```
 
-## Commandes
+### Commandes
 
 ```bash
 # Build et run
@@ -38,7 +62,7 @@ Sources/ClaudeMonitor/
 swift build && .build/debug/ClaudeMonitor
 ```
 
-## Points d'entrée
+### Points d'entrée
 
 | Besoin | Fichier | Fonction |
 |--------|---------|----------|
@@ -48,17 +72,31 @@ swift build && .build/debug/ClaudeMonitor
 | Modifier indicateur status | ProcessMonitor.swift | `MonitorSnapshot.statusIndicator` |
 | Modifier intervalle refresh | ClaudeMonitorApp.swift | `refreshTimer` (30s) |
 
-## Dashboard
+## Dashboard (./dashboard)
 
-Le bouton "Lancer Dashboard" :
-1. Lance `npm run dev:all` en background (processus détaché)
-2. Attend que le serveur soit prêt (port 3120)
-3. Ouvre automatiquement http://localhost:3120
+Toutes les fonctionnalités avancées sont dans le dashboard :
 
-Le bouton "Stop" arrête proprement le serveur (ports 3120/3121).
+- **Diagnostics** : CPU, RAM, Swap, Réseau avec analyse de cause probable
+- **Tooltips** : Hover sur les métriques = explication + suggestions
+- **Sessions Claude Code** : Lecture des JSONL de `~/.claude/projects/`
+- **Process stats** : CPU/RAM par process (collector)
+- **Timeline** : Événements unifiés
+
+### Sessions Claude Code
+
+Le dashboard lit directement les fichiers JSONL de `~/.claude/projects/`.
+
+- **Zero config** : Pas besoin d'OTEL, les données sont déjà là
+- **Zero overhead** : Lecture à la demande
+- **Historique** : Sessions des dernières 24h
 
 ## Prérequis
 
 - macOS 13+
 - Node.js + npm (pour le dashboard)
-- ai-dashboard installé dans `~/ai-dashboard`
+
+## Installation du dashboard
+
+```bash
+cd dashboard && npm install
+```

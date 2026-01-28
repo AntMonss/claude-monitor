@@ -489,8 +489,9 @@ class ProcessMonitor: ObservableObject {
             guard let self = self else { return }
 
             // Launch npm run dev:all in background (detached)
+            // Source nvm first since Process() doesn't have shell PATH
             let script = """
-            cd \(self.homeDir)/ai-dashboard && nohup npm run dev:all > /tmp/ai-dashboard.log 2>&1 &
+            export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && cd \(self.homeDir)/dev/claude-monitor/dashboard && nohup npm run dev:all > /tmp/ai-dashboard.log 2>&1 &
             """
             _ = self.shell(script)
 
