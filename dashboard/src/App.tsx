@@ -707,14 +707,21 @@ export default function App() {
       });
     }
 
-    // Codex local stats
+    // Codex local stats - check daily_stats, session_snapshot, or session_file
     const latestCodexStats = events.codexLocalEvents
       .filter((e) => e.event === "daily_stats")
+      .at(-1);
+    const latestCodexSnapshot = events.codexLocalEvents
+      .filter((e) => e.event === "session_snapshot")
+      .at(-1);
+    const latestCodexFile = events.codexLocalEvents
+      .filter((e) => e.event === "session_file")
       .at(-1);
     const hasCodexLocalData = events.codexLocalEvents.length > 0;
     const codexLocalLastUpdate = events.codexLocalEvents.at(-1)?.ts ?? null;
 
-    if (hasCodexLocalData && latestCodexStats) {
+    // Show daily stats if available
+    if (latestCodexStats) {
       sources.push({
         id: "codex-local",
         name: "Codex (Local)",
@@ -726,26 +733,41 @@ export default function App() {
         refreshMs: 30000,
         lastUpdate: codexLocalLastUpdate,
       });
-    }
-
-    // Codex session info
-    const latestCodexSession = events.codexLocalEvents
-      .filter((e) => e.event === "session_snapshot")
-      .at(-1);
-
-    if (latestCodexSession && latestCodexSession.durationMinutes) {
-      const durationMin = latestCodexSession.durationMinutes;
+    } else if (hasCodexLocalData && latestCodexFile) {
+      // Fallback to session file info
       sources.push({
-        id: "codex-session",
-        name: "Codex Session",
+        id: "codex-local",
+        name: "Codex (Local)",
         icon: "terminal",
-        status: durationMin > 240 ? "error" : durationMin > 120 ? "warning" : "ok",
-        value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m`,
-        detail: `${latestCodexSession.promptCount ?? 0} prompts`,
-        score: durationMin > 240 ? 60 : durationMin > 120 ? 30 : 0,
+        status: "ok",
+        value: `${latestCodexFile.messageCount ?? 0} msgs`,
+        detail: `${latestCodexFile.toolCount ?? 0} tools · ${latestCodexFile.model ?? "—"}`,
+        score: 0,
         refreshMs: 30000,
         lastUpdate: codexLocalLastUpdate,
       });
+    }
+
+    // Codex session info - check session_snapshot first, then session_file
+    const codexSessionData = latestCodexSnapshot || latestCodexFile;
+
+    if (codexSessionData) {
+      const durationMin = codexSessionData.durationMinutes ?? 0;
+      const hasValidDuration = durationMin > 0;
+
+      if (hasValidDuration) {
+        sources.push({
+          id: "codex-session",
+          name: "Codex Session",
+          icon: "terminal",
+          status: durationMin > 240 ? "error" : durationMin > 120 ? "warning" : "ok",
+          value: `${Math.floor(durationMin / 60)}h${durationMin % 60}m`,
+          detail: `${codexSessionData.promptCount ?? codexSessionData.messageCount ?? 0} prompts/msgs`,
+          score: durationMin > 240 ? 60 : durationMin > 120 ? 30 : 0,
+          refreshMs: 30000,
+          lastUpdate: codexLocalLastUpdate,
+        });
+      }
     }
 
     // Find probable cause
